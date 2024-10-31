@@ -1,0 +1,35 @@
+subsection Distributed Lagrange<1,2>
+  set Coupling quadrature order                    = 3
+  set Initial embedded space refinement            = 7
+  set Initial embedding space refinement           = 7
+  set Local refinements steps near embedded domain = 0
+  set Solver                                       = CG
+  subsection Embedded configuration
+    set Function constants  = R=.2, Cx=.4, Cy=.4
+    set Function expression = R*cos(2*pi*x)+Cx; R*sin(2*pi*x)+Cy
+    set Variable names      = x,y,t
+  end
+  subsection Embedded value
+    set Function constants  =
+    set Function expression = 1
+    set Variable names      = x,y,t
+  end
+  subsection Embedding Dirichlet boundary conditions
+    set Function constants  =
+    set Function expression = 0
+    set Variable names      = x,y,t
+  end
+  subsection Embedding rhs function
+    set Function constants  =
+    set Function expression = 0
+    set Variable names      = x,y,t
+  end
+  subsection Schur solver control
+    set Log frequency = 1
+    set Log history   = true
+    set Log result    = true
+    set Max steps     = 1000   # default: 100
+    set Tolerance     = 1.e-10 # default: 1.e-10
+    set Tolerance     = 1.e-10 # default: 1.e-10
+  end
+end
