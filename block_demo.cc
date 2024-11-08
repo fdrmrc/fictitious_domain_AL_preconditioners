@@ -613,6 +613,7 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     auto K_inv = linear_operator(K, K_inv_umfpack);
 
     auto S_inv = C * K * Ct + M;
+    //auto S_inv = C * K * Ct;
 
     auto AA =
         block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
@@ -660,6 +661,7 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     auto K_inv = linear_operator(K, K_inv_umfpack);
 
     auto S_inv = C * K * Ct + M ;
+    //auto S_inv = C * K * Ct;
 
     auto AA =
           block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
