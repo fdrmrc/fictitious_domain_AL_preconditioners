@@ -1,52 +1,19 @@
-/* ------------------------------------------------------------------------
- *
- * SPDX-License-Identifier: LGPL-2.1-or-later
- * Copyright (C) 2018 - 2024 by the deal.II authors
- *
- * This file is part of the deal.II library.
- *
- * Part of the source code is dual licensed under Apache-2.0 WITH
- * LLVM-exception OR LGPL-2.1-or-later. Detailed license information
- * governing the source code and code contributions can be found in
- * LICENSE.md and CONTRIBUTING.md at the top level directory of deal.II.
- *
- * ------------------------------------------------------------------------
- *
- * Authors: Luca Heltai, Giovanni Alzetta, International School for
- *            Advanced Studies, Trieste, 2018
- */
-
 #include <deal.II/base/logstream.h>
+#include <deal.II/base/parameter_acceptor.h>
+#include <deal.II/base/parsed_function.h>
 #include <deal.II/base/timer.h>
 #include <deal.II/base/utilities.h>
-
-#include <deal.II/base/parameter_acceptor.h>
-
-#include <deal.II/grid/grid_generator.h>
-#include <deal.II/grid/grid_tools.h>
-#include <deal.II/grid/tria.h>
-
-#include <deal.II/grid/grid_out.h>
-
-#include <deal.II/grid/grid_tools_cache.h>
-
+#include <deal.II/dofs/dof_tools.h>
 #include <deal.II/fe/fe.h>
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_system.h>
-
 #include <deal.II/fe/mapping_fe_field.h>
 #include <deal.II/fe/mapping_q_eulerian.h>
-
-#include <deal.II/dofs/dof_tools.h>
-
-#include <deal.II/base/parsed_function.h>
-
-#include <deal.II/numerics/data_out.h>
-#include <deal.II/numerics/matrix_tools.h>
-#include <deal.II/numerics/vector_tools.h>
-
-#include <deal.II/non_matching/coupling.h>
-
+#include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/grid_out.h>
+#include <deal.II/grid/grid_tools.h>
+#include <deal.II/grid/grid_tools_cache.h>
+#include <deal.II/grid/tria.h>
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/linear_operator.h>
 #include <deal.II/lac/linear_operator_tools.h>
@@ -57,6 +24,10 @@
 #include <deal.II/lac/sparse_direct.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/vector.h>
+#include <deal.II/non_matching/coupling.h>
+#include <deal.II/numerics/data_out.h>
+#include <deal.II/numerics/matrix_tools.h>
+#include <deal.II/numerics/vector_tools.h>
 
 #include <fstream>
 #include <iostream>
@@ -64,10 +35,11 @@
 namespace Step60 {
 using namespace dealii;
 
-template <int dim, int spacedim = dim> class DistributedLagrangeProblem {
-public:
+template <int dim, int spacedim = dim>
+class DistributedLagrangeProblem {
+ public:
   class Parameters : public ParameterAcceptor {
-  public:
+   public:
     Parameters();
 
     unsigned int initial_refinement = 4;
@@ -99,7 +71,7 @@ public:
 
   void run();
 
-private:
+ private:
   const Parameters &parameters;
 
   void setup_grids_and_dofs();
@@ -151,7 +123,7 @@ private:
 
   SparseMatrix<double> stiffness_matrix;
   SparseMatrix<double> mass_matrix;
-  //SparseMatrix<double> embedded_stiffness_matrix;
+  // SparseMatrix<double> embedded_stiffness_matrix;
   SparseMatrix<double> coupling_matrix;
 
   AffineConstraints<double> constraints;
@@ -250,7 +222,7 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
       std::make_unique<GridTools::Cache<spacedim, spacedim>>(*space_grid);
 
   std::ofstream out_ext("grid-ext.gnuplot");
-  GridOut       grid_out_ext;
+  GridOut grid_out_ext;
   grid_out_ext.write_gnuplot(*space_grid, out_ext);
   out_ext.close();
   std::cout << "External Grid written to grid-ext.gnuplot" << std::endl;
@@ -305,11 +277,10 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
   }
 
   std::ofstream out_refined("grid-refined.gnuplot");
-   GridOut       grid_out_refined;
-   grid_out_refined.write_gnuplot(*space_grid, out_refined);
-   out_refined.close();
-   std::cout << "Refined Grid written to grid-refined.gnuplot" << std::endl;
-
+  GridOut grid_out_refined;
+  grid_out_refined.write_gnuplot(*space_grid, out_refined);
+  out_refined.close();
+  std::cout << "Refined Grid written to grid-refined.gnuplot" << std::endl;
 
   const double embedded_space_maximal_diameter =
       GridTools::maximal_cell_diameter(*embedded_grid, *embedded_mapping);
@@ -354,8 +325,8 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_embedding_dofs() {
   DynamicSparsityPattern mass_dsp(embedded_dh->n_dofs(), embedded_dh->n_dofs());
   DoFTools::make_sparsity_pattern(*embedded_dh, mass_dsp);
   mass_sparsity.copy_from(mass_dsp);
-  mass_matrix.reinit(mass_sparsity);               // M_immersed
-  //embedded_stiffness_matrix.reinit(mass_sparsity); // A_immersed
+  mass_matrix.reinit(mass_sparsity);  // M_immersed
+  // embedded_stiffness_matrix.reinit(mass_sparsity); // A_immersed
 
   solution.reinit(space_dh->n_dofs());
   embedding_rhs.reinit(space_dh->n_dofs());
@@ -403,9 +374,9 @@ void DistributedLagrangeProblem<dim, spacedim>::assemble_system() {
         embedding_rhs_function, embedding_rhs,
         static_cast<const Function<spacedim> *>(nullptr), constraints);
 
-    //MatrixTools::create_laplace_matrix(*embedded_mapping, *embedded_dh,
-                                       //QGauss<dim>(2 * space_fe->degree + 1),
-                                       //embedded_stiffness_matrix);
+    // MatrixTools::create_laplace_matrix(*embedded_mapping, *embedded_dh,
+    // QGauss<dim>(2 * space_fe->degree + 1),
+    // embedded_stiffness_matrix);
 
     MatrixTools::create_mass_matrix(*embedded_mapping, *embedded_dh,
                                     QGauss<dim>(2 * embedded_fe->degree + 1),
@@ -430,97 +401,6 @@ void DistributedLagrangeProblem<dim, spacedim>::assemble_system() {
   }
 }
 
-//class BlockLowerTriangular {
-//public:
-  //BlockLowerTriangular(const LinearOperator<Vector<double>> K_,
-                       //const LinearOperator<Vector<double>> K_inv_,
-                       //const LinearOperator<Vector<double>> C_,
-                       //const LinearOperator<Vector<double>> Ct_,
-                       //const LinearOperator<Vector<double>> M_,
-                       //const LinearOperator<Vector<double>> A_immersed_) {
-    //K = K_;
-    //K_inv = K_inv_;
-    //C = C_;
-    //Ct = Ct_;
-    //M = M_;
-    //A_immersed = A_immersed_;
-  //}
-
-  //void vmult(BlockVector<double> &v, const BlockVector<double> &u) const {
-
-    //v.block(0) = K_inv * u.block(0);
-
-    // auto Sinv = A_immersed + M;
-    //auto Sinv = C * K * Ct + M;
-
-    //v.block(1) = Sinv * (-1. * u.block(1) + C * v.block(0));
-  //}
-
-//  LinearOperator<Vector<double>> K;
-//  LinearOperator<Vector<double>> K_inv;
-//  LinearOperator<Vector<double>> C;
-//  LinearOperator<Vector<double>> Ct;
-//  LinearOperator<Vector<double>> M;
-//  LinearOperator<Vector<double>> A_immersed;
-//};
-
-//class BlockUpperTriangular {
-//public:
-  //BlockUpperTriangular(const LinearOperator<Vector<double>> K_,
-                       //const LinearOperator<Vector<double>> K_inv_,
-                       //const LinearOperator<Vector<double>> C_,
-                       //const LinearOperator<Vector<double>> Ct_,
-                       //const LinearOperator<Vector<double>> M_) {
-    //K = K_;
-    //K_inv = K_inv_;
-    //C = C_;
-    //Ct = Ct_;
-    //M = M_;
-  //}
-
-  //void vmult(BlockVector<double> &v, const BlockVector<double> &u) const {
-    //v.block(0) = 0.;
-    //v.block(1) = 0.;
-
-    // v.block(0) = K_inv * u.block(0);
-
-    // Vector<double> tmp;
-    // tmp = u.block(1);
-    // tmp *= -1.;            // tmp = -y1
-    // tmp += C * v.block(0); // tmp = tmp+C*x0 = -y1+C*x0
-    // tmp *= -1.;            // tmp = y1 - C*x0
-
-    // Vector<double> tmp2(tmp);
-    // tmp2 = 0.;
-    // tmp2 = Sinv_part * tmp;
-
-    // Vector<double> tmp3(u.block(1));
-    // tmp3       = 0.;
-    // tmp3       = M * tmp;
-    // v.block(1) = tmp2 + tmp3;
-
-    //Vector<double> tmp(u.block(1));
-    //tmp = 0.;
-    //auto Sinv_part = C * K * Ct;
-    //tmp = Sinv_part * u.block(1);
-
-    //Vector<double> tmp2(u.block(1));
-    //tmp2 = 0.;
-    //tmp2 = M * u.block(1);
-    //v.block(1) = -1 * (tmp + tmp2);
-
-    //Vector<double> tmp3(u.block(0));
-    //tmp3 = tmp3 - Ct * v.block(1);
-    //v.block(0) = K_inv * tmp3;
-  //}
-
-  //LinearOperator<Vector<double>> K;
-  //LinearOperator<Vector<double>> K_inv;
-  //LinearOperator<Vector<double>> C;
-  //LinearOperator<Vector<double>> Ct;
-  //LinearOperator<Vector<double>> M;
-//};
-
 void output_double_number(double input, const std::string &text) {
   std::cout << text << input << std::endl;
 }
@@ -528,7 +408,7 @@ void output_double_number(double input, const std::string &text) {
 template <int dim, int spacedim>
 void DistributedLagrangeProblem<dim, spacedim>::solve() {
   TimerOutput::Scope timer_section(monitor, "Solve system");
-  
+
   // // Old way
   if (std::strcmp(parameters.solver.c_str(), "CG") == 0) {
     SparseDirectUMFPACK K_inv_umfpack;
@@ -550,8 +430,8 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
 
     constraints.distribute(solution);
   }
-    // // GMRES with left lower triangular preconditioner
-    else if (std::strcmp(parameters.solver.c_str(), "GMRES") == 0) {
+  // // GMRES with left lower triangular preconditioner
+  else if (std::strcmp(parameters.solver.c_str(), "GMRES") == 0) {
     std::cout << "Solving with GMRES" << std::endl;
     SparseDirectUMFPACK K_inv_umfpack;
     K_inv_umfpack.initialize(stiffness_matrix);
@@ -560,19 +440,19 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     auto Ct = linear_operator(coupling_matrix);
     auto C = transpose_operator(Ct);
     auto M = linear_operator(mass_matrix);
-    //auto A_immersed = linear_operator(embedded_stiffness_matrix);
+    // auto A_immersed = linear_operator(embedded_stiffness_matrix);
     const auto Zero = M * 0.0;
 
     auto K_inv = linear_operator(K, K_inv_umfpack);
 
     auto S_inv = C * K * Ct + M;
-    //auto S_inv = C * K * Ct;
+    // auto S_inv = C * K * Ct;
 
     auto AA =
         block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
 
     auto prec = block_operator<2, 2, BlockVector<double>>(
-      {{{{K_inv, 0*Ct}}, {{S_inv * C * K_inv, -1*S_inv}}}});
+        {{{{K_inv, 0 * Ct}}, {{S_inv * C * K_inv, -1 * S_inv}}}});
 
     // Initialize block structure
     BlockVector<double> solution_block;
@@ -597,9 +477,9 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     solution = solution_block.block(0);
 
     constraints.distribute(solution);
-  } 
-    // // GMRES with right upper triangular preconditioner
-    else if (std::strcmp(parameters.solver.c_str(), "GMRES_right") == 0) {
+  }
+  // // GMRES with right upper triangular preconditioner
+  else if (std::strcmp(parameters.solver.c_str(), "GMRES_right") == 0) {
     std::cout << "Solving with GMRES (right preconditioning)" << std::endl;
     SparseDirectUMFPACK K_inv_umfpack;
     K_inv_umfpack.initialize(stiffness_matrix);
@@ -613,13 +493,13 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     auto K_inv = linear_operator(K, K_inv_umfpack);
 
     auto S_inv = C * K * Ct + M;
-    //auto S_inv = C * K * Ct;
+    // auto S_inv = C * K * Ct;
 
     auto AA =
         block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
 
     auto prec = block_operator<2, 2, BlockVector<double>>(
-      {{{{K_inv, K_inv * Ct * S_inv}}, {{0 * C, -1*S_inv}}}});
+        {{{{K_inv, K_inv * Ct * S_inv}}, {{0 * C, -1 * S_inv}}}});
 
     // Initialize block structure
     BlockVector<double> solution_block;
@@ -645,9 +525,9 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     solution = solution_block.block(0);
 
     constraints.distribute(solution);
-  } 
-    // // FGMRES with right upper triangular preconditioner
-    else if (std::strcmp(parameters.solver.c_str(), "FGMRES") == 0) {
+  }
+  // // FGMRES with right upper triangular preconditioner
+  else if (std::strcmp(parameters.solver.c_str(), "FGMRES") == 0) {
     std::cout << "Solving with FGMRES" << std::endl;
     SparseDirectUMFPACK K_inv_umfpack;
     K_inv_umfpack.initialize(stiffness_matrix);
@@ -660,15 +540,14 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
 
     auto K_inv = linear_operator(K, K_inv_umfpack);
 
-    auto S_inv = C * K * Ct + M ;
-    //auto S_inv = C * K * Ct;
+    auto S_inv = C * K * Ct + M;
+    // auto S_inv = C * K * Ct;
 
     auto AA =
-          block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
+        block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
 
     auto prec = block_operator<2, 2, BlockVector<double>>(
-      {{{{K_inv, K_inv * Ct * S_inv}}, {{0 * C, -1*S_inv}}}});
-
+        {{{{K_inv, K_inv * Ct * S_inv}}, {{0 * C, -1 * S_inv}}}});
 
     // Initialize block structure
     BlockVector<double> solution_block;
@@ -690,9 +569,9 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     solution = solution_block.block(0);
 
     constraints.distribute(solution);
-  } 
-    // // GMRES with ELMAN right upper triangular preconditioner
-    else if (std::strcmp(parameters.solver.c_str(), "ELMAN_triang") == 0) {
+  }
+  // // GMRES with ELMAN right upper triangular preconditioner
+  else if (std::strcmp(parameters.solver.c_str(), "ELMAN_triang") == 0) {
     std::cout << "Solving with ELMAN right-preconditioning" << std::endl;
     SparseDirectUMFPACK K_inv_umfpack;
     K_inv_umfpack.initialize(stiffness_matrix);
@@ -703,22 +582,21 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     auto M = linear_operator(mass_matrix);
     const auto Zero = M * 0.0;
 
-    IterationNumberControl   c_ct_solver_control(20);
-    auto                     C_Ct = C * Ct;
+    IterationNumberControl c_ct_solver_control(20);
+    auto C_Ct = C * Ct;
     SolverCG<Vector<double>> solver_cg_c_ct(c_ct_solver_control);
-    auto                     C_Ct_inv =
-      inverse_operator(C_Ct, solver_cg_c_ct, PreconditionIdentity());
-
+    auto C_Ct_inv =
+        inverse_operator(C_Ct, solver_cg_c_ct, PreconditionIdentity());
 
     auto K_inv = linear_operator(K, K_inv_umfpack);
 
     auto S_inv = C_Ct_inv * C * K_inv * Ct * C_Ct_inv;
 
     auto AA =
-          block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
+        block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
 
     auto prec_elman = block_operator<2, 2, BlockVector<double>>(
-      {{{{K_inv, K_inv * Ct * S_inv}}, {{0 * C, -1*S_inv}}}});
+        {{{{K_inv, K_inv * Ct * S_inv}}, {{0 * C, -1 * S_inv}}}});
 
     // Initialize block structure
     BlockVector<double> solution_block;
@@ -735,22 +613,18 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
 
     typename SolverGMRES<BlockVector<double>>::AdditionalData data;
     data.force_re_orthogonalization = true;
-    data.right_preconditioning      = true;
+    data.right_preconditioning = true;
 
-    SolverGMRES<BlockVector<double>> solver_gmres(schur_solver_control,
-                                                  data);
+    SolverGMRES<BlockVector<double>> solver_gmres(schur_solver_control, data);
 
-    solver_gmres.solve(AA,
-                       solution_block,
-                       system_rhs_block,
-                       prec_elman);
+    solver_gmres.solve(AA, solution_block, system_rhs_block, prec_elman);
 
     solution = solution_block.block(0);
 
     constraints.distribute(solution);
-  } 
-    // // GMRES with Juvigny diagonal preconditioner
-    else if (std::strcmp(parameters.solver.c_str(), "JUVIGNY") == 0) {
+  }
+  // // GMRES with Juvigny diagonal preconditioner
+  else if (std::strcmp(parameters.solver.c_str(), "JUVIGNY") == 0) {
     std::cout << "Solving with JUVIGNY diagonal-preconditioning" << std::endl;
     SparseDirectUMFPACK K_inv_umfpack;
     K_inv_umfpack.initialize(stiffness_matrix);
@@ -766,10 +640,10 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     auto S_inv = C * K * Ct;
 
     auto AA =
-          block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
+        block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
 
     auto prec_diag = block_operator<2, 2, BlockVector<double>>(
-      {{{{K_inv, 0 * C}}, {{0 * Ct, S_inv}}}});
+        {{{{K_inv, 0 * C}}, {{0 * Ct, S_inv}}}});
 
     // Initialize block structure
     BlockVector<double> solution_block;
@@ -786,22 +660,18 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
 
     typename SolverGMRES<BlockVector<double>>::AdditionalData data;
     data.force_re_orthogonalization = true;
-    data.right_preconditioning      = false;
+    data.right_preconditioning = false;
 
-    SolverGMRES<BlockVector<double>> solver_gmres(schur_solver_control,
-                                                  data);
+    SolverGMRES<BlockVector<double>> solver_gmres(schur_solver_control, data);
 
-    solver_gmres.solve(AA,
-                       solution_block,
-                       system_rhs_block,
-                       prec_diag);
+    solver_gmres.solve(AA, solution_block, system_rhs_block, prec_diag);
 
     solution = solution_block.block(0);
 
     constraints.distribute(solution);
-  } 
-    // Michal Preconditioner
-    else if (std::strcmp(parameters.solver.c_str(), "MICHAL") == 0) {
+  }
+  // Michal Preconditioner
+  else if (std::strcmp(parameters.solver.c_str(), "MICHAL") == 0) {
     std::cout << "Solving with MICHAL preconditioner" << std::endl;
     SparseDirectUMFPACK K_inv_umfpack;
     K_inv_umfpack.initialize(stiffness_matrix);
@@ -852,7 +722,7 @@ void DistributedLagrangeProblem<dim, spacedim>::output_results() {
 
   DataOut<dim, spacedim> embedded_out;
 
-  //std::ofstream embedded_out_file("embedded.vtu");
+  // std::ofstream embedded_out_file("embedded.vtu");
   std::ofstream embedded_out_file("grid-int.gnuplot");
 
   embedded_out.attach_dof_handler(*embedded_dh);
@@ -860,7 +730,7 @@ void DistributedLagrangeProblem<dim, spacedim>::output_results() {
   embedded_out.add_data_vector(embedded_value, "g");
   embedded_out.build_patches(*embedded_mapping,
                              parameters.embedded_space_finite_element_degree);
-  //embedded_out.write_vtu(embedded_out_file);
+  // embedded_out.write_vtu(embedded_out_file);
   embedded_out.write_gnuplot(embedded_out_file);
 
   // Estimate condition number
@@ -912,7 +782,7 @@ void DistributedLagrangeProblem<dim, spacedim>::run() {
   solve();
   output_results();
 }
-} // namespace Step60
+}  // namespace Step60
 
 int main(int argc, char **argv) {
   try {
