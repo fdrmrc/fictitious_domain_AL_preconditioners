@@ -32,6 +32,8 @@
 #include <fstream>
 #include <iostream>
 
+#include "rational_preconditioner.h"
+
 namespace Step60 {
 using namespace dealii;
 
@@ -123,7 +125,7 @@ class DistributedLagrangeProblem {
 
   SparseMatrix<double> stiffness_matrix;
   SparseMatrix<double> mass_matrix;
-  // SparseMatrix<double> embedded_stiffness_matrix;
+  SparseMatrix<double> embedded_stiffness_matrix;
   SparseMatrix<double> coupling_matrix;
 
   AffineConstraints<double> constraints;
@@ -325,8 +327,8 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_embedding_dofs() {
   DynamicSparsityPattern mass_dsp(embedded_dh->n_dofs(), embedded_dh->n_dofs());
   DoFTools::make_sparsity_pattern(*embedded_dh, mass_dsp);
   mass_sparsity.copy_from(mass_dsp);
-  mass_matrix.reinit(mass_sparsity);  // M_immersed
-  // embedded_stiffness_matrix.reinit(mass_sparsity); // A_immersed
+  mass_matrix.reinit(mass_sparsity);                // M_immersed
+  embedded_stiffness_matrix.reinit(mass_sparsity);  // A_immersed
 
   solution.reinit(space_dh->n_dofs());
   embedding_rhs.reinit(space_dh->n_dofs());
@@ -374,9 +376,9 @@ void DistributedLagrangeProblem<dim, spacedim>::assemble_system() {
         embedding_rhs_function, embedding_rhs,
         static_cast<const Function<spacedim> *>(nullptr), constraints);
 
-    // MatrixTools::create_laplace_matrix(*embedded_mapping, *embedded_dh,
-    // QGauss<dim>(2 * space_fe->degree + 1),
-    // embedded_stiffness_matrix);
+    MatrixTools::create_laplace_matrix(*embedded_mapping, *embedded_dh,
+                                       QGauss<dim>(2 * space_fe->degree + 1),
+                                       embedded_stiffness_matrix);
 
     MatrixTools::create_mass_matrix(*embedded_mapping, *embedded_dh,
                                     QGauss<dim>(2 * embedded_fe->degree + 1),
@@ -440,7 +442,6 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     auto Ct = linear_operator(coupling_matrix);
     auto C = transpose_operator(Ct);
     auto M = linear_operator(mass_matrix);
-    // auto A_immersed = linear_operator(embedded_stiffness_matrix);
     const auto Zero = M * 0.0;
 
     auto K_inv = linear_operator(K, K_inv_umfpack);
@@ -702,6 +703,57 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     solution = K_inv * (embedding_rhs - Ct * lambda);
 
     constraints.distribute(solution);
+  } else if (std::strcmp(parameters.solver.c_str(), "rational") == 0) {
+    // intialize operators and block structure
+    auto K = linear_operator(stiffness_matrix);
+    auto Ct = linear_operator(coupling_matrix);
+    auto C = transpose_operator(Ct);
+    auto M = linear_operator(mass_matrix);
+    const auto Zero = M * 0.0;
+
+    BlockVector<double> solution_block;
+    BlockVector<double> system_rhs_block;
+
+    auto AA =
+        block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
+    AA.reinit_domain_vector(solution_block, false);
+    AA.reinit_range_vector(system_rhs_block, false);
+
+    solution_block.block(0) = solution;
+    solution_block.block(1) = lambda;
+
+    system_rhs_block.block(0) = embedding_rhs;
+    system_rhs_block.block(1) = embedded_rhs;
+
+    // First, compute a bound on the spectral radius of M^{-1)A. That is needed
+    // for the rational preconditioner routine
+    std::vector<double> min_diags;
+    for (unsigned int i = 0; i < mass_matrix.m(); ++i)
+      min_diags.push_back(mass_matrix.diag_element(i));
+
+    double rho_bound = (embedded_stiffness_matrix.linfty_norm()) /
+                       (*std::min_element(min_diags.begin(), min_diags.end()));
+
+    std::cout << "Upper bound on spectral radius of M^(-1)A: " << rho_bound
+              << std::endl;
+
+    SparseDirectUMFPACK K_inv_umfpack;
+    K_inv_umfpack.initialize(stiffness_matrix);
+    auto K_inv = linear_operator(K, K_inv_umfpack);
+    SolverControl solver_control(2000, 1e-14, false, false);
+
+    // Construct the rational preconditioner to be given to fgmres
+    RationalPreconditioner rational_prec{K_inv, &embedded_stiffness_matrix,
+                                         &mass_matrix, rho_bound};
+
+    SolverFGMRES<BlockVector<double>> solver_min_res(schur_solver_control);
+
+    solver_min_res.solve(AA, solution_block, system_rhs_block, rational_prec);
+
+    solution = solution_block.block(0);
+
+    constraints.distribute(solution);
+
   } else {
     AssertThrow(false, ExcNotImplemented());
   }
@@ -786,6 +838,7 @@ void DistributedLagrangeProblem<dim, spacedim>::run() {
 
 int main(int argc, char **argv) {
   try {
+    Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
     using namespace dealii;
     using namespace Step60;
 
