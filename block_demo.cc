@@ -278,11 +278,13 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
     space_grid->execute_coarsening_and_refinement();
   }
 
-  std::ofstream out_refined("grid-refined.gnuplot");
-  GridOut grid_out_refined;
-  grid_out_refined.write_gnuplot(*space_grid, out_refined);
-  out_refined.close();
-  std::cout << "Refined Grid written to grid-refined.gnuplot" << std::endl;
+  if (space_grid->n_cells() < 2e6) {  // do not dump grid when mesh is too fine
+    std::ofstream out_refined("grid-refined.gnuplot");
+    GridOut grid_out_refined;
+    grid_out_refined.write_gnuplot(*space_grid, out_refined);
+    out_refined.close();
+    std::cout << "Refined Grid written to grid-refined.gnuplot" << std::endl;
+  }
 
   const double embedded_space_maximal_diameter =
       GridTools::maximal_cell_diameter(*embedded_grid, *embedded_mapping);
