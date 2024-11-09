@@ -152,6 +152,10 @@ $\hat{S}^{-1} := (C*C^T)^{-1} * C * A * C^T * (C*C^T)^{-1}$.
 | 16836469+8193                             |  |
 
 
+$-\Delta u + u = f \text{ in } \Omega,$
+$u= g  \text{ on } \Gamma,$
+$u= 0  \text{ on } \partial \Omega$
+
 $\hat{S}^{-1} := C * A * Ct + M$.
 
 | DoF number (background + immersed)        | #iter   |
@@ -166,6 +170,10 @@ $\hat{S}^{-1} := C * A * Ct + M$.
 | 4223931+4097                              | 44 |
 | 16836469+8193                             |  |
 
+
+$-\Delta u + u = f \text{ in } \Omega,$
+$u= g  \text{ on } \Gamma,$
+$u= 0  \text{ on } \partial \Omega$
 
 $\hat{S}^{-1} := C * A * Ct $.
 
@@ -206,6 +214,9 @@ $\hat{S}^{-1} := C * A * Ct + M$.
 | 16836469+8193                             |  |
 
 
+$-\Delta u + u = f \text{ in } \Omega,$
+$u= g  \text{ on } \Gamma,$
+$u= 0  \text{ on } \partial \Omega$
 
 $\hat{S}^{-1} := C * A * Ct $.
 
@@ -244,6 +255,10 @@ $\hat{S}^{-1} := C * A * Ct + M$.
 | 4223931+4097                              | 71 |
 | 16836469+8193                             |  |
 
+
+$-\Delta u + u = f \text{ in } \Omega,$
+$u= g  \text{ on } \Gamma,$
+$u= 0  \text{ on } \partial \Omega$
 
 $\hat{S}^{-1} := C * A * Ct $.
 
