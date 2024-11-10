@@ -45,7 +45,7 @@ $P\coloneqq\texttt{diag}(A,-\Delta^{s})$, with $s=\frac{1}{2}$.
 
 
 - - - - - - - - - - - - 
-$-\Delta u + u = f \text{ in } \Omega,$
+$-\Delta u = f \text{ in } \Omega,$
 $u= g  \text{ on } \Gamma,$
 $u= 0  \text{ on } \partial \Omega$
 
@@ -89,7 +89,7 @@ $\hat{S}^{-1} := CAC^T$, with MinRes.
 
 
 - - - - - - - - - - - - 
-$-\Delta u + u = f \text{ in } \Omega,$
+$-\Delta u = f \text{ in } \Omega,$
 $u= g  \text{ on } \Gamma,$
 $u= 0  \text{ on } \partial \Omega$
 
@@ -133,7 +133,7 @@ $\hat{S}^{-1} := CAC^T$.
 
 
 - - - - - - - - - - - - 
-$-\Delta u + u = f \text{ in } \Omega,$
+$-\Delta u = f \text{ in } \Omega,$
 $u= g  \text{ on } \Gamma,$
 $u= 0  \text{ on } \partial \Omega$
 
@@ -152,7 +152,7 @@ $\hat{S}^{-1} := (C*C^T)^{-1} * C * A * C^T * (C*C^T)^{-1}$.
 | 16836469+8193                             |  |
 
 
-$-\Delta u + u = f \text{ in } \Omega,$
+$-\Delta u = f \text{ in } \Omega,$
 $u= g  \text{ on } \Gamma,$
 $u= 0  \text{ on } \partial \Omega$
 
@@ -171,7 +171,7 @@ $\hat{S}^{-1} := C * A * Ct + M$.
 | 16836469+8193                             |  |
 
 
-$-\Delta u + u = f \text{ in } \Omega,$
+$-\Delta u = f \text{ in } \Omega,$
 $u= g  \text{ on } \Gamma,$
 $u= 0  \text{ on } \partial \Omega$
 
@@ -195,7 +195,7 @@ $\hat{S}^{-1} := C * A * Ct $.
 
 
 - - - - - - - - - - - - 
-$-\Delta u + u = f \text{ in } \Omega,$
+$-\Delta u = f \text{ in } \Omega,$
 $u= g  \text{ on } \Gamma,$
 $u= 0  \text{ on } \partial \Omega$
 
@@ -214,7 +214,7 @@ $\hat{S}^{-1} := C * A * Ct + M$.
 | 16836469+8193                             |  |
 
 
-$-\Delta u + u = f \text{ in } \Omega,$
+$-\Delta u = f \text{ in } \Omega,$
 $u= g  \text{ on } \Gamma,$
 $u= 0  \text{ on } \partial \Omega$
 
@@ -237,7 +237,7 @@ $\hat{S}^{-1} := C * A * Ct $.
 
 
 - - - - - - - - - - - - 
-$-\Delta u + u = f \text{ in } \Omega,$
+$-\Delta u = f \text{ in } \Omega,$
 $u= g  \text{ on } \Gamma,$
 $u= 0  \text{ on } \partial \Omega$
 
@@ -256,7 +256,7 @@ $\hat{S}^{-1} := C * A * Ct + M$.
 | 16836469+8193                             |  |
 
 
-$-\Delta u + u = f \text{ in } \Omega,$
+$-\Delta u = f \text{ in } \Omega,$
 $u= g  \text{ on } \Gamma,$
 $u= 0  \text{ on } \partial \Omega$
 
