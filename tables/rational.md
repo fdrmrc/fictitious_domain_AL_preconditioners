@@ -3,7 +3,7 @@
 
 - - - - - - - - - - - - 
 $-\Delta u + u = f \text{ in } \Omega,$
-$u= g  \text{ on } \Gamma,$
+$u= g =1  \text{ on } \Gamma,$
 $u= 0  \text{ on } \partial \Omega$
 
 $P\coloneqq\texttt{diag}(A+M,-\Delta^{s})$, with $s=\frac{1}{2}$.
@@ -22,7 +22,7 @@ $P\coloneqq\texttt{diag}(A+M,-\Delta^{s})$, with $s=\frac{1}{2}$.
 - - - - - - - - 
 
 $-\Delta u = f \text{ in } \Omega,$
-$u= g  \text{ on } \Gamma,$
+$u= g=1  \text{ on } \Gamma,$
 $u= 0  \text{ on } \partial \Omega$
 
 $P\coloneqq\texttt{diag}(A,-\Delta^{s})$, with $s=\frac{1}{2}$.
