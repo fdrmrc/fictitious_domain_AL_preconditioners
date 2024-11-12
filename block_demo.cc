@@ -217,7 +217,7 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
 
   space_grid = std::make_unique<Triangulation<spacedim>>();
 
-  GridGenerator::hyper_cube(*space_grid, 0, 1, true);
+  GridGenerator::hyper_cube(*space_grid, 0., 1, true);
 
   space_grid->refine_global(parameters.initial_refinement);
   space_grid_tools_cache =
@@ -748,7 +748,9 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     RationalPreconditioner rational_prec{K_inv, &embedded_stiffness_matrix,
                                          &mass_matrix, rho_bound};
 
-    SolverFGMRES<BlockVector<double>> solver_min_res(schur_solver_control);
+    // SolverGMRES<BlockVector<double>> solver_min_res(schur_solver_control);
+    // SolverFGMRES<BlockVector<double>> solver_min_res(schur_solver_control);
+    SolverMinRes<BlockVector<double>> solver_min_res(schur_solver_control);
 
     solver_min_res.solve(AA, solution_block, system_rhs_block, rational_prec);
 
