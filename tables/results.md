@@ -10,7 +10,7 @@ $P\coloneqq\texttt{diag}(A+M,-\Delta^{s})$, with $s=\frac{1}{2}$.
 
 | DoF number (background + immersed)        | #iter   |
 | :---------------------------------------- | :------ |
-| 1089+33                                  | 43 |
+| 1089+33                                   | 43 |
 | 16641+129                                 | 39 |
 | 66049+257                                 | 37 |
 | 263169+513                                | 37 |
@@ -29,7 +29,7 @@ $P\coloneqq\texttt{diag}(A,-\Delta^{s})$, with $s=\frac{1}{2}$.
 
 | DoF number (background + immersed)        | #iter   |
 | :---------------------------------------- | :------ |
-| 1089+33                                  | 30 |
+| 1089+33                                   | 30 |
 | 4225+65                                   | 30 |
 | 16641+129                                 | 28 |
 | 66049+257                                 | 28 |
@@ -56,6 +56,46 @@ $P\coloneqq\texttt{diag}(A,-\Delta^{s})$, with $s=\frac{1}{2}$.
 | 1063467+2049                              | 35 |
 | 4223931+4097                              | 35 |
 | 16836469+8193                             | 35 |
+
+
+- - - - - - - - 
+$-\Delta u =  8\pi^2 \sin(2\pi x)\sin(2\pi y) \text{ in } \Omega,$
+$u = g= \sin(2\pi x)\sin(2\pi y) \text{ on } \Gamma,$
+$u= 0  \text{ on } \partial \Omega$
+
+$P\coloneqq\texttt{diag}(A,-\Delta^{s})$, with $s=\frac{1}{2}$.
+
+| DoF number (background + immersed)        | #iter (MinRes)   |
+| :---------------------------------------- | :------ |
+| 876+65                                    | 41 |
+| 2297+129                                  | 42 |
+| 6634+257                                  | 38 |
+| 21447+513                                 | 34 |
+| 75699+1025                                | 22 |
+| 282428+2049                               | 12 |
+| 1089310+4097                              | 10 |
+| 4275759+8193                              | 8 |
+
+
+- - - - - - - - 
+
+
+$-\Delta u = x+1 \text{ in } \Omega,$
+$u = g= \sin(y)  \text{ on } \Gamma,$
+$u= 0  \text{ on } \partial \Omega$
+
+$P\coloneqq\texttt{diag}(A,-\Delta^{s})$, with $s=\frac{1}{2}$.
+
+| DoF number (background + immersed)        | #iter (MinRes)   |
+| :---------------------------------------- | :------ |
+| 876+65                                    | 47 |
+| 2297+129                                  | 49 |
+| 6634+257                                  | 45 |
+| 21447+513                                 | 45 |
+| 75699+1025                                | 43 |
+| 282428+2049                               | 41 |
+| 1089310+4097                              | 39 |
+| 4275759+8193                              | 39 |
 
 
 
