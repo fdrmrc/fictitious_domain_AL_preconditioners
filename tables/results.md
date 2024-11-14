@@ -108,7 +108,7 @@ $-\Delta u = f \text{ in } \Omega,$
 $u= g  \text{ on } \Gamma,$
 $u= 0  \text{ on } \partial \Omega$
 
-$\hat{S}^{-1} := CAC^T + M$, with MinRes.
+$\hat{S}^{-1} \coloneqq CAC^T + M$, with MinRes.
 
 | DoF number (background + immersed)        | #iter   |
 | :---------------------------------------- | :------ |
@@ -192,15 +192,24 @@ $\hat{S}^{-1} := CAC^T$.
 
 
 - - - - - - - - - - - - 
-$-\Delta u = f \text{ in } \Omega,$
-$u= g  \text{ on } \Gamma,$
+$-\Delta u = f=0 \text{ in } \Omega,$
+$u= 1  \text{ on } \Gamma,$
 $u= 0  \text{ on } \partial \Omega$
+*Elman BFBt preconditioner*
+$\hat{S}^{-1} := (CC^T)^{-1} C A  C^T(CC^T)^{-1}$.
 
-$\hat{S}^{-1} := (C*C^T)^{-1} * C * A * C^T * (C*C^T)^{-1}$.
 
 | DoF number (background + immersed)        | #iter   |
 | :---------------------------------------- | :------ |
-| 1089+33                                  | 19 |
+| 1089+33                                   | 15 |
+| 4225+65                                   | 19 |
+| 16641+129                                 | 24 |
+| 66049+257                                 | 36 |
+| 263169+513                                | 47 |
+| 1050625+1025                              | 69 |
+| 1063467+2049                              | 84 |
+| 4223931+4097                              | 116 |
+<!-- | 1089+33                                   | 19 |
 | 4225+65                                   | 27 |
 | 16641+129                                 | 54 |
 | 66049+257                                 | 110 |
@@ -208,7 +217,7 @@ $\hat{S}^{-1} := (C*C^T)^{-1} * C * A * C^T * (C*C^T)^{-1}$.
 | 1050625+1025                              | 690 |
 | 1063467+2049                              | >1000 |
 | 4223931+4097                              | 15 |
-| 16836469+8193                             |  |
+| 16836469+8193                             |  | -->
 
 
 $-\Delta u = f \text{ in } \Omega,$
