@@ -585,16 +585,14 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     auto M = linear_operator(mass_matrix);
     const auto Zero = M * 0.0;
 
-    IterationNumberControl c_ct_solver_control(20);
+    IterationNumberControl c_ct_solver_control(40, 1e-12, false, false);
     auto C_Ct = C * Ct;
     SolverCG<Vector<double>> solver_cg_c_ct(c_ct_solver_control);
     auto C_Ct_inv =
         inverse_operator(C_Ct, solver_cg_c_ct, PreconditionIdentity());
-
     auto K_inv = linear_operator(K, K_inv_umfpack);
 
-    auto S_inv = C_Ct_inv * C * K_inv * Ct * C_Ct_inv;
-
+    auto S_inv = C_Ct_inv * C * K * Ct * C_Ct_inv;
     auto AA =
         block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
 
