@@ -15,6 +15,7 @@
 #include <deal.II/grid/grid_tools_cache.h>
 #include <deal.II/grid/tria.h>
 #include <deal.II/lac/affine_constraints.h>
+#include <deal.II/lac/diagonal_matrix.h>
 #include <deal.II/lac/linear_operator.h>
 #include <deal.II/lac/linear_operator_tools.h>
 #include <deal.II/lac/precondition.h>
@@ -121,10 +122,12 @@ class DistributedLagrangeProblem {
 
   SparsityPattern stiffness_sparsity;
   SparsityPattern mass_sparsity;
+  SparsityPattern Mass_sparsity;
   SparsityPattern coupling_sparsity;
 
   SparseMatrix<double> stiffness_matrix;
   SparseMatrix<double> mass_matrix;
+  SparseMatrix<double> Mass_matrix;
   SparseMatrix<double> embedded_stiffness_matrix;
   SparseMatrix<double> coupling_matrix;
 
@@ -332,6 +335,11 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_embedding_dofs() {
   mass_matrix.reinit(mass_sparsity);                // M_immersed
   embedded_stiffness_matrix.reinit(mass_sparsity);  // A_immersed
 
+  DynamicSparsityPattern Mass_dsp(space_dh->n_dofs(), space_dh->n_dofs());
+  DoFTools::make_sparsity_pattern(*space_dh, Mass_dsp, constraints);
+  Mass_sparsity.copy_from(Mass_dsp);
+  Mass_matrix.reinit(Mass_sparsity);
+
   solution.reinit(space_dh->n_dofs());
   embedding_rhs.reinit(space_dh->n_dofs());
 
@@ -376,6 +384,10 @@ void DistributedLagrangeProblem<dim, spacedim>::assemble_system() {
     MatrixTools::create_laplace_matrix(
         *space_dh, QGauss<spacedim>(2 * space_fe->degree + 1), stiffness_matrix,
         embedding_rhs_function, embedding_rhs,
+        static_cast<const Function<spacedim> *>(nullptr), constraints);
+
+    MatrixTools::create_mass_matrix(
+        *space_dh, QGauss<spacedim>(2 * space_fe->degree + 1), Mass_matrix,
         static_cast<const Function<spacedim> *>(nullptr), constraints);
 
     MatrixTools::create_laplace_matrix(*embedded_mapping, *embedded_dh,
@@ -592,7 +604,106 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
         inverse_operator(C_Ct, solver_cg_c_ct, PreconditionIdentity());
     auto K_inv = linear_operator(K, K_inv_umfpack);
 
-    auto S_inv = C_Ct_inv * C * K * Ct * C_Ct_inv;
+    auto S_inv = (C_Ct_inv * C * K * Ct * C_Ct_inv);
+    auto AA =
+        block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
+
+    auto prec_elman = block_operator<2, 2, BlockVector<double>>(
+        {{{{K_inv, K_inv * Ct * S_inv}}, {{0 * C, -1 * S_inv}}}});
+
+    // Initialize block structure
+    BlockVector<double> solution_block;
+    BlockVector<double> system_rhs_block;
+
+    AA.reinit_domain_vector(solution_block, false);
+    AA.reinit_range_vector(system_rhs_block, false);
+
+    solution_block.block(0) = solution;
+    solution_block.block(1) = lambda;
+
+    system_rhs_block.block(0) = embedding_rhs;
+    system_rhs_block.block(1) = embedded_rhs;
+
+    typename SolverGMRES<BlockVector<double>>::AdditionalData data;
+    data.force_re_orthogonalization = true;
+    data.right_preconditioning = true;
+
+    SolverGMRES<BlockVector<double>> solver_gmres(schur_solver_control, data);
+
+    solver_gmres.solve(AA, solution_block, system_rhs_block, prec_elman);
+
+    solution = solution_block.block(0);
+
+    constraints.distribute(solution);
+  }  // // GMRES with scaled-BFBt right upper triangular preconditioner
+  else if (std::strcmp(parameters.solver.c_str(), "scaled-BFBt") == 0) {
+    std::cout << "Solving with scaled-BFBt right-preconditioning" << std::endl;
+    SparseDirectUMFPACK K_inv_umfpack;
+    K_inv_umfpack.initialize(stiffness_matrix);
+
+    auto K = linear_operator(stiffness_matrix);
+    auto Ct = linear_operator(coupling_matrix);
+    auto C = transpose_operator(Ct);
+    auto M = linear_operator(Mass_matrix);
+    auto mass = linear_operator(mass_matrix);
+    const auto Zero = M * 0.0;
+
+    // Inverse of the Diagonal mass matrix
+    Vector<double> diag_M;
+    diag_M.reinit(Mass_matrix.m());
+    for (unsigned int i = 0; i < Mass_matrix.m(); ++i)
+      diag_M(i) = 1.0 / Mass_matrix.diag_element(i);
+    DiagonalMatrix<Vector<double>> diag_mass_inv(diag_M);
+
+    // Inverse of the Diagonal stiffness matrix
+    Vector<double> diag_K;
+    diag_K.reinit(stiffness_matrix.m());
+    for (unsigned int i = 0; i < stiffness_matrix.m(); ++i)
+      diag_K(i) = 1.0 / stiffness_matrix.diag_element(i);
+    DiagonalMatrix<Vector<double>> diag_K_inv(diag_K);
+
+    // Inverse of the Lumped mass matrix
+    Vector<double> lumped_M;
+    Vector<double> ones;
+    lumped_M.reinit(Mass_matrix.m());
+    ones.reinit(Mass_matrix.m());
+    ones = 1.;
+    Mass_matrix.vmult(lumped_M, ones);
+    for (unsigned int i = 0; i < Mass_matrix.m(); ++i)
+      lumped_M(i) = 1.0 / lumped_M(i);
+    DiagonalMatrix<Vector<double>> lumped_Mass_matrix_inv(lumped_M);
+
+    // Inverse of the Immersed lumped mass matrix
+    Vector<double> lumped_m;
+    lumped_m.reinit(mass_matrix.m());
+    for (unsigned int i = 0; i < mass_matrix.m(); ++i) {
+      lumped_m(i) = 0.0;
+      for (auto it = mass_matrix.begin(i); it != mass_matrix.end(i); ++it)
+        lumped_m(i) += it->value();
+      lumped_m(i) = 1.0 / lumped_m(i);
+    }
+    DiagonalMatrix<Vector<double>> lumped_mass_matrix_inv(lumped_m);
+
+    auto M1_inv = linear_operator(lumped_Mass_matrix_inv);
+    auto M2_inv = linear_operator(lumped_Mass_matrix_inv);
+    // auto M3_inv = linear_operator(lumped_mass_matrix_inv);
+
+    IterationNumberControl c_ct_solver_control(40, 1e-12, false, false);
+    auto C_Ct2 = C * M2_inv * Ct;
+    SolverCG<Vector<double>> solver_cg_c_ct(c_ct_solver_control);
+    auto C_Ct2_inv =
+        inverse_operator(C_Ct2, solver_cg_c_ct, PreconditionIdentity());
+
+    auto C_Ct1 = C * M1_inv * Ct;
+    auto C_Ct1_inv =
+        inverse_operator(C_Ct1, solver_cg_c_ct, PreconditionIdentity());
+
+    auto K_inv = linear_operator(K, K_inv_umfpack);
+
+    auto S_inv = C_Ct2_inv * C * M2_inv * K * M2_inv * Ct * C_Ct2_inv;
+
+    // auto S_inv = M3_inv * C * M2_inv * K * M2_inv * Ct * M3_inv;
+
     auto AA =
         block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
 
