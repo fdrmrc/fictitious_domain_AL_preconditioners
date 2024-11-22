@@ -33,6 +33,7 @@
 #include <fstream>
 #include <iostream>
 
+#include "augmented_lagrangian_preconditioner.h"
 #include "rational_preconditioner.h"
 
 namespace Step60 {
@@ -858,7 +859,6 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
                                          &mass_matrix, rho_bound};
 
     // SolverGMRES<BlockVector<double>> solver_min_res(schur_solver_control);
-    // SolverFGMRES<BlockVector<double>> solver_min_res(schur_solver_control);
     SolverMinRes<BlockVector<double>> solver_min_res(schur_solver_control);
 
     solver_min_res.solve(AA, solution_block, system_rhs_block, rational_prec);
@@ -866,8 +866,59 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     solution = solution_block.block(0);
 
     constraints.distribute(solution);
+  } else if (std::strcmp(parameters.solver.c_str(), "augmented") == 0) {
+    // intialize operators and block structure
+    auto K = linear_operator(stiffness_matrix);
+    auto Ct = linear_operator(coupling_matrix);
+    auto C = transpose_operator(Ct);
+    auto M = linear_operator(mass_matrix);
+    SparseDirectUMFPACK M_inv_umfpack;
+    M_inv_umfpack.initialize(mass_matrix);
+    const auto Zero = M * 0.0;
 
-  } else {
+    const double h_immersed = GridTools::minimal_cell_diameter(*space_grid);
+    const double gamma = 1e2 / h_immersed;
+    auto invW = linear_operator(mass_matrix, M_inv_umfpack);
+    auto Aug = K + gamma * Ct * invW * C;
+
+    BlockVector<double> solution_block;
+    BlockVector<double> system_rhs_block;
+
+    auto AA = block_operator<2, 2, BlockVector<double>>(
+        {{{{Aug, Ct}}, {{C, Zero}}}});  //! Augmented the (1,1) block
+    AA.reinit_domain_vector(solution_block, false);
+    AA.reinit_range_vector(system_rhs_block, false);
+
+    solution_block.block(0) = solution;
+    solution_block.block(1) = lambda;
+
+    // lagrangian term
+    Vector<double> tmp;
+    tmp.reinit(embedding_rhs.size());
+    tmp = gamma * Ct * invW * embedded_rhs;
+    system_rhs_block.block(0) += tmp;  // ! augmented
+    system_rhs_block.block(1) = embedded_rhs;
+
+    SolverControl control_lagrangian(6000, 1e-11, false, false);
+    SolverCG<Vector<double>> solver_lagrangian(control_lagrangian);
+
+    auto Aug_inv =
+        inverse_operator(Aug, solver_lagrangian, PreconditionIdentity());
+
+    SolverFGMRES<BlockVector<double>> solver_fgmres(schur_solver_control);
+
+    BlockPreconditionerAugmentedLagrangian augmented_lagrangian_preconditioner{
+        Aug_inv, C, Ct, invW, gamma};
+    solver_fgmres.solve(AA, solution_block, system_rhs_block,
+                        augmented_lagrangian_preconditioner);
+
+    solution = solution_block.block(0);
+
+    constraints.distribute(solution);
+
+  }
+
+  else {
     AssertThrow(false, ExcNotImplemented());
   }
 }
