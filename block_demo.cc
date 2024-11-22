@@ -876,10 +876,20 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     M_inv_umfpack.initialize(mass_matrix);
     const auto Zero = M * 0.0;
 
-    const double h_immersed = GridTools::minimal_cell_diameter(*space_grid);
-    const double gamma = 1e2 / h_immersed;
-    auto invW = linear_operator(mass_matrix, M_inv_umfpack);
+    //const double h_immersed = GridTools::minimal_cell_diameter(*space_grid);
+    //const double gamma = 1e2 / h_immersed;
+    //auto invW = linear_operator(mass_matrix, M_inv_umfpack);
+    //auto Aug = K + gamma * Ct * invW * C;
+
+    IdentityMatrix W(mass_matrix.m());
+    auto invW = linear_operator(W);
+    const double gamma = stiffness_matrix.linfty_norm() / (coupling_matrix.l1_norm() * coupling_matrix.l1_norm());
+    deallog << "gamma: " << gamma << std::endl;
+    deallog << "stiffness_matrix.linfty_norm(): " << stiffness_matrix.linfty_norm() << std::endl;
+    deallog << "coupling_matrix.l1_norm(): " << coupling_matrix.l1_norm() << std::endl;
+
     auto Aug = K + gamma * Ct * invW * C;
+
 
     BlockVector<double> solution_block;
     BlockVector<double> system_rhs_block;
