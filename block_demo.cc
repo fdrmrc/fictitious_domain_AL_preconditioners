@@ -24,17 +24,21 @@
 #include <deal.II/lac/solver_minres.h>
 #include <deal.II/lac/sparse_direct.h>
 #include <deal.II/lac/sparse_matrix.h>
+#include <deal.II/lac/sparsity_pattern.h>
 #include <deal.II/lac/vector.h>
 #include <deal.II/non_matching/coupling.h>
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/matrix_tools.h>
 #include <deal.II/numerics/vector_tools.h>
 
+#include <cmath>
 #include <fstream>
 #include <iostream>
+#include <limits>
 
 #include "augmented_lagrangian_preconditioner.h"
 #include "rational_preconditioner.h"
+#include "utilities.h"
 
 namespace Step60 {
 using namespace dealii;
@@ -876,20 +880,32 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     M_inv_umfpack.initialize(mass_matrix);
     const auto Zero = M * 0.0;
 
-    //const double h_immersed = GridTools::minimal_cell_diameter(*space_grid);
-    //const double gamma = 1e2 / h_immersed;
-    //auto invW = linear_operator(mass_matrix, M_inv_umfpack);
-    //auto Aug = K + gamma * Ct * invW * C;
+    // const double h_immersed = GridTools::minimal_cell_diameter(*space_grid);
+    // const double gamma = 1e2 / h_immersed;
+    // auto invW = linear_operator(mass_matrix, M_inv_umfpack);
+    // auto Aug = K + gamma * Ct * invW * C;
 
     IdentityMatrix W(mass_matrix.m());
     auto invW = linear_operator(W);
-    const double gamma = stiffness_matrix.linfty_norm() / (coupling_matrix.l1_norm() * coupling_matrix.l1_norm());
-    deallog << "gamma: " << gamma << std::endl;
-    deallog << "stiffness_matrix.linfty_norm(): " << stiffness_matrix.linfty_norm() << std::endl;
-    deallog << "coupling_matrix.l1_norm(): " << coupling_matrix.l1_norm() << std::endl;
+
+    // Uncomment the following lines to use the L2 norm
+    // double rho_C = compute_l2_norm_matrix(coupling_matrix,
+    // coupling_sparsity); double rho_A =
+    // compute_l2_norm_matrix(stiffness_matrix, stiffness_sparsity); deallog <<
+    // "stiffness_matrix.l2_norm(): " << rho_A << std::endl; deallog <<
+    // "coupling_matrix.l2_norm(): " << rho_C << std::endl; const double gamma =
+    // rho_A / (rho_C * rho_C);
+
+    deallog << "stiffness_matrix.linfty_norm(): "
+            << stiffness_matrix.linfty_norm() << std::endl;
+    deallog << "coupling_matrix.l1_norm(): " << coupling_matrix.l1_norm()
+            << std::endl;
+    const double gamma =
+        stiffness_matrix.linfty_norm() /
+        (coupling_matrix.l1_norm() * coupling_matrix.l1_norm());
 
     auto Aug = K + gamma * Ct * invW * C;
-
+    deallog << "gamma: " << gamma << std::endl;
 
     BlockVector<double> solution_block;
     BlockVector<double> system_rhs_block;
