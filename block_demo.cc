@@ -691,7 +691,7 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
 
     auto M1_inv = linear_operator(lumped_Mass_matrix_inv);
     auto M2_inv = linear_operator(lumped_Mass_matrix_inv);
-    // auto M3_inv = linear_operator(lumped_mass_matrix_inv);
+    auto M3_inv = linear_operator(lumped_mass_matrix_inv);
 
     IterationNumberControl c_ct_solver_control(40, 1e-12, false, false);
     auto C_Ct2 = C * M2_inv * Ct;
@@ -873,38 +873,58 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
   } else if (std::strcmp(parameters.solver.c_str(), "augmented") == 0) {
     // intialize operators and block structure
     auto K = linear_operator(stiffness_matrix);
+    auto k = linear_operator(embedded_stiffness_matrix);
     auto Ct = linear_operator(coupling_matrix);
     auto C = transpose_operator(Ct);
     auto M = linear_operator(mass_matrix);
+     const auto Zero = M * 0.0;
     SparseDirectUMFPACK M_inv_umfpack;
     M_inv_umfpack.initialize(mass_matrix);
-    const auto Zero = M * 0.0;
 
-    // const double h_immersed = GridTools::minimal_cell_diameter(*space_grid);
+    // Inverse of the Immersed lumped mass matrix
+    //Vector<double> lumped_m;
+    //lumped_m.reinit(mass_matrix.m());
+    //for (unsigned int i = 0; i < mass_matrix.m(); ++i) {
+      //lumped_m(i) = 0.0;
+      //for (auto it = mass_matrix.begin(i); it != mass_matrix.end(i); ++it)
+        //lumped_m(i) += it->value();
+      //lumped_m(i) = 1.0 / lumped_m(i);
+    //}
+    //DiagonalMatrix<Vector<double>> lumped_mass_matrix_inv(lumped_m);
+    //auto invW1 = linear_operator(lumped_mass_matrix_inv);
+   
+
+    //const double h_immersed = GridTools::minimal_cell_diameter(*space_grid);
     // const double gamma = 1e2 / h_immersed;
     // auto invW = linear_operator(mass_matrix, M_inv_umfpack);
     // auto Aug = K + gamma * Ct * invW * C;
 
-    IdentityMatrix W(mass_matrix.m());
-    auto invW = linear_operator(W);
+    //IdentityMatrix W(mass_matrix.m());
+    //auto invW = linear_operator(W);
 
     // Uncomment the following lines to use the L2 norm
-    // double rho_C = compute_l2_norm_matrix(coupling_matrix,
-    // coupling_sparsity); double rho_A =
-    // compute_l2_norm_matrix(stiffness_matrix, stiffness_sparsity); deallog <<
-    // "stiffness_matrix.l2_norm(): " << rho_A << std::endl; deallog <<
-    // "coupling_matrix.l2_norm(): " << rho_C << std::endl; const double gamma =
-    // rho_A / (rho_C * rho_C);
+     double rho_C = compute_l2_norm_matrix(coupling_matrix, coupling_sparsity); 
+     double rho_A_imm = compute_l2_norm_matrix(embedded_stiffness_matrix, mass_sparsity);
+     double rho_A = compute_l2_norm_matrix(stiffness_matrix, stiffness_sparsity); deallog <<
+     "stiffness_matrix.l2_norm(): " << rho_A << std::endl; 
+     deallog <<
+     "coupling_matrix.l2_norm(): " << rho_C << std::endl;
+     deallog <<
+     "mass_matrix.l2_norm(): " << rho_C << std::endl; 
+     const double gamma = 10; //(rho_A / (rho_C * rho_C));
+     auto invW1 = linear_operator(mass_matrix, M_inv_umfpack);
+     auto invW = invW1 * invW1;
+     auto Aug = K + gamma * Ct * invW * C;
 
-    deallog << "stiffness_matrix.linfty_norm(): "
-            << stiffness_matrix.linfty_norm() << std::endl;
-    deallog << "coupling_matrix.l1_norm(): " << coupling_matrix.l1_norm()
-            << std::endl;
-    const double gamma =
-        stiffness_matrix.linfty_norm() /
-        (coupling_matrix.l1_norm() * coupling_matrix.l1_norm());
+    //deallog << "stiffness_matrix.linfty_norm(): "
+            //<< stiffness_matrix.linfty_norm() << std::endl;
+    //deallog << "coupling_matrix.l1_norm(): " << coupling_matrix.l1_norm()
+            //<< std::endl;
+    //const double gamma =
+        //stiffness_matrix.linfty_norm() /
+        //(coupling_matrix.l1_norm() * coupling_matrix.l1_norm());
 
-    auto Aug = K + gamma * Ct * invW * C;
+    //auto Aug = K + gamma * Ct * invW * C;
     deallog << "gamma: " << gamma << std::endl;
 
     BlockVector<double> solution_block;
