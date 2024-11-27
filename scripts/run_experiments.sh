@@ -1,27 +1,34 @@
 #!/bin/bash
-
+set -e
 
 if test ! -e block_demo.cc ; then
   echo "You must run this script from the top level directory of the project!"
   exit
 else
-# Compile code
-  cd build_dir &&
-  cmake .. && make -j4 
+# Compile code in Release mode
+if [ ! -d "build_dir" ]; then
+  mkdir build_dir && cd build_dir &&
+  cmake -DCMAKE_BUILD_TYPE="Release" .. && make -j4 
+else
+  cd build_dir && make release && make -j4 
+fi
 fi
 
 
-declare -a array=("../parameters/circle/circle.prm" 
-                  "../parameters/square/square.prm" 
-                  "../parameters/flower/flower.prm")
+echo -e "\n****** RUNNING THE EXPERIMENTS IN RELEASE MODE ******\n"
+echo -e "****** OUTPUT WILL BE SAVED UNDER build_dir/ DIRECTORY ******\n"
 
-
-echo -e "\n******RUNNING THE EXPERIMENTS******\n"
-echo -e "******OUTPUT WILL BE SAVED UNDER build_dir/ DIRECTORY******\n"
-for prm_file in "${array[@]}"
-do
- ./block_demo $prm_file | tee codimension_1_different_geometries.out 
- echo -e "\n- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+for dir in ../parameters/*/
+  do
+  dir=${dir%*/} 
+ for prm_file in $dir/*.prm; do
+    if [ -f "$prm_file" ]; then
+        name=$(basename "$prm_file" .prm)
+        echo "RUNNING PARAMETER FILE: $prm_file"
+        ./block_demo $prm_file | tee codimension_1_$name.out 
+        echo -e "\n- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+    fi
+  done
 done
-echo -e "******DONE. RESULTS SAVED AT /build_dir/codimension_1_different_geometries.out******"
-echo -e "******ITERATION COUNTS SAVED AT /build_dir/dofs_and_iterations.csv******"
+echo -e "****** DONE. RESULTS SAVED AT /build_dir (check .out and .csv files) ******"
+echo -e "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"

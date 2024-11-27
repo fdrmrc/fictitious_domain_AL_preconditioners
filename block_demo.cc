@@ -37,6 +37,7 @@
 #include <deal.II/numerics/vector_tools.h>
 
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <ios>
 #include <iostream>
@@ -93,6 +94,8 @@ class DistributedLagrangeProblem {
 
   void run();
 
+  void set_filename(const std::string &filename);
+
  private:
   const Parameters &parameters;
 
@@ -110,8 +113,7 @@ class DistributedLagrangeProblem {
 
   void output_results();
 
-  void export_results_to_csv_file(
-      const std::string &filename = "dofs_and_iterations");
+  void export_results_to_csv_file();
 
   std::unique_ptr<Triangulation<spacedim>> space_grid;
   std::unique_ptr<GridTools::Cache<spacedim, spacedim>> space_grid_tools_cache;
@@ -163,6 +165,8 @@ class DistributedLagrangeProblem {
   Vector<double> embedded_value;
 
   TimerOutput monitor;
+
+  std::string parameters_filename;
 };
 
 template <int dim, int spacedim>
@@ -234,6 +238,13 @@ DistributedLagrangeProblem<dim, spacedim>::DistributedLagrangeProblem(
     ParameterAcceptor::prm.set("Reduction", "1.e-12");
     ParameterAcceptor::prm.set("Tolerance", "1.e-12");
   });
+}
+
+template <int dim, int spacedim>
+void DistributedLagrangeProblem<dim, spacedim>::set_filename(
+    const std::string &filename) {
+  Assert(!filename.empty(), ExcMessage("Set an invalid filename"));
+  parameters_filename = filename;
 }
 
 template <int dim, int spacedim>
@@ -1053,11 +1064,14 @@ void DistributedLagrangeProblem<dim, spacedim>::output_results() {
 }
 
 template <int dim, int spacedim>
-void DistributedLagrangeProblem<dim, spacedim>::export_results_to_csv_file(
-    const std::string &filename) {
+void DistributedLagrangeProblem<dim, spacedim>::export_results_to_csv_file() {
   std::ofstream myfile;
 
-  myfile.open(filename + ".csv", std::ios::app);
+  AssertThrow(!parameters_filename.empty(),
+              ExcMessage("You must set the name of the parameter file."));
+  std::filesystem::path p(parameters_filename);
+  myfile.open(p.stem().string() + ".csv",
+              std::ios::app);  // get the filename and add proper extension
   // myfile << "DoF (background + immersed)"
   //        << ","
   //        << "Iteration counts"
@@ -1100,6 +1114,7 @@ int main(int argc, char **argv) {
       parameter_file = "parameters.prm";
 
     ParameterAcceptor::initialize(parameter_file, "used_parameters.prm");
+    problem.set_filename(parameter_file);
     problem.run();
   } catch (std::exception &exc) {
     std::cerr << std::endl
