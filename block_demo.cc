@@ -4,6 +4,7 @@
 #include <deal.II/base/parameter_acceptor.h>
 #include <deal.II/base/parsed_function.h>
 #include <deal.II/base/timer.h>
+#include <deal.II/base/types.h>
 #include <deal.II/base/utilities.h>
 #include <deal.II/dofs/dof_tools.h>
 #include <deal.II/fe/fe.h>
@@ -37,6 +38,7 @@
 
 #include <cmath>
 #include <fstream>
+#include <ios>
 #include <iostream>
 #include <limits>
 
@@ -46,6 +48,13 @@
 
 namespace Step60 {
 using namespace dealii;
+
+//  Struct used to store iteration counts
+struct ResultsData {
+  types::global_dof_index dofs_background;
+  types::global_dof_index dofs_immersed;
+  unsigned int outer_iterations;
+};
 
 template <int dim, int spacedim = dim>
 class DistributedLagrangeProblem {
@@ -79,6 +88,7 @@ class DistributedLagrangeProblem {
     std::string solver = "CG";
   };
 
+  ResultsData results_data;
   DistributedLagrangeProblem(const Parameters &parameters);
 
   void run();
@@ -99,6 +109,9 @@ class DistributedLagrangeProblem {
   void solve();
 
   void output_results();
+
+  void export_results_to_csv_file(
+      const std::string &filename = "dofs_and_iterations");
 
   std::unique_ptr<Triangulation<spacedim>> space_grid;
   std::unique_ptr<GridTools::Cache<spacedim, spacedim>> space_grid_tools_cache;
@@ -964,12 +977,14 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     solution = solution_block.block(0);
 
     constraints.distribute(solution);
-
-  }
-
-  else {
+  } else {
     AssertThrow(false, ExcNotImplemented());
   }
+
+  // Store iteration counts and DoF
+  results_data.dofs_background = space_dh->n_dofs();
+  results_data.dofs_immersed = embedded_dh->n_dofs();
+  results_data.outer_iterations = schur_solver_control.last_step();
 }
 
 template <int dim, int spacedim>
@@ -1023,7 +1038,6 @@ void DistributedLagrangeProblem<dim, spacedim>::output_results() {
   } catch (...) {
     std::cerr << "***BBt solve not successfull (see condition number above)***"
               << std::endl;
-    ;
   }
 
   // Vector<double> u(lambda);
@@ -1039,6 +1053,22 @@ void DistributedLagrangeProblem<dim, spacedim>::output_results() {
 }
 
 template <int dim, int spacedim>
+void DistributedLagrangeProblem<dim, spacedim>::export_results_to_csv_file(
+    const std::string &filename) {
+  std::ofstream myfile;
+
+  myfile.open(filename + ".csv", std::ios::app);
+  // myfile << "DoF (background + immersed)"
+  //        << ","
+  //        << "Iteration counts"
+  //        << "\n";
+  myfile << results_data.dofs_background << "," << results_data.dofs_immersed
+         << "," << results_data.outer_iterations << "\n";
+
+  myfile.close();
+}
+
+template <int dim, int spacedim>
 void DistributedLagrangeProblem<dim, spacedim>::run() {
   AssertThrow(parameters.initialized, ExcNotInitialized());
   deallog.depth_console(parameters.verbosity_level);
@@ -1048,6 +1078,7 @@ void DistributedLagrangeProblem<dim, spacedim>::run() {
   assemble_system();
   solve();
   output_results();
+  export_results_to_csv_file();
 }
 }  // namespace Step60
 
