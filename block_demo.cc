@@ -1,3 +1,5 @@
+#include <deal.II/base/data_out_base.h>
+#include <deal.II/base/exceptions.h>
 #include <deal.II/base/logstream.h>
 #include <deal.II/base/parameter_acceptor.h>
 #include <deal.II/base/parsed_function.h>
@@ -5,6 +7,7 @@
 #include <deal.II/base/utilities.h>
 #include <deal.II/dofs/dof_tools.h>
 #include <deal.II/fe/fe.h>
+#include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_system.h>
 #include <deal.II/fe/mapping_fe_field.h>
@@ -28,6 +31,7 @@
 #include <deal.II/lac/vector.h>
 #include <deal.II/non_matching/coupling.h>
 #include <deal.II/numerics/data_out.h>
+#include <deal.II/numerics/data_out_dof_data.h>
 #include <deal.II/numerics/matrix_tools.h>
 #include <deal.II/numerics/vector_tools.h>
 
@@ -354,8 +358,17 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_embedding_dofs() {
 template <int dim, int spacedim>
 void DistributedLagrangeProblem<dim, spacedim>::setup_embedded_dofs() {
   embedded_dh = std::make_unique<DoFHandler<dim, spacedim>>(*embedded_grid);
-  embedded_fe = std::make_unique<FE_Q<dim, spacedim>>(
-      parameters.embedded_space_finite_element_degree);
+
+  if (parameters.embedded_space_finite_element_degree > 0) {
+    // use continuous elements if degree>0
+    embedded_fe = std::make_unique<FE_Q<dim, spacedim>>(
+        parameters.embedded_space_finite_element_degree);
+  } else if (parameters.embedded_space_finite_element_degree == 0) {
+    // otherwise, DG(0) elements for the multiplier
+    embedded_fe = std::make_unique<FE_DGQ<dim, spacedim>>(0);
+  } else {
+    AssertThrow(false, ExcNotImplemented());
+  }
   embedded_dh->distribute_dofs(*embedded_fe);
 
   lambda.reinit(embedded_dh->n_dofs());
@@ -877,54 +890,44 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     auto Ct = linear_operator(coupling_matrix);
     auto C = transpose_operator(Ct);
     auto M = linear_operator(mass_matrix);
-     const auto Zero = M * 0.0;
+    const auto Zero = M * 0.0;
     SparseDirectUMFPACK M_inv_umfpack;
     M_inv_umfpack.initialize(mass_matrix);
 
     // Inverse of the Immersed lumped mass matrix
-    //Vector<double> lumped_m;
-    //lumped_m.reinit(mass_matrix.m());
-    //for (unsigned int i = 0; i < mass_matrix.m(); ++i) {
-      //lumped_m(i) = 0.0;
-      //for (auto it = mass_matrix.begin(i); it != mass_matrix.end(i); ++it)
-        //lumped_m(i) += it->value();
-      //lumped_m(i) = 1.0 / lumped_m(i);
+    // Vector<double> lumped_m;
+    // lumped_m.reinit(mass_matrix.m());
+    // for (unsigned int i = 0; i < mass_matrix.m(); ++i) {
+    // lumped_m(i) = 0.0;
+    // for (auto it = mass_matrix.begin(i); it != mass_matrix.end(i); ++it)
+    // lumped_m(i) += it->value();
+    // lumped_m(i) = 1.0 / lumped_m(i);
     //}
-    //DiagonalMatrix<Vector<double>> lumped_mass_matrix_inv(lumped_m);
-    //auto invW1 = linear_operator(lumped_mass_matrix_inv);
-   
+    // DiagonalMatrix<Vector<double>> lumped_mass_matrix_inv(lumped_m);
+    // auto invW1 = linear_operator(lumped_mass_matrix_inv);
 
-    //const double h_immersed = GridTools::minimal_cell_diameter(*space_grid);
+    // const double h_immersed = GridTools::minimal_cell_diameter(*space_grid);
     // const double gamma = 1e2 / h_immersed;
     // auto invW = linear_operator(mass_matrix, M_inv_umfpack);
     // auto Aug = K + gamma * Ct * invW * C;
 
-    //IdentityMatrix W(mass_matrix.m());
-    //auto invW = linear_operator(W);
+    // IdentityMatrix W(mass_matrix.m());
+    // auto invW = linear_operator(W);
 
-    // Uncomment the following lines to use the L2 norm
-     double rho_C = compute_l2_norm_matrix(coupling_matrix, coupling_sparsity); 
-     double rho_A_imm = compute_l2_norm_matrix(embedded_stiffness_matrix, mass_sparsity);
-     double rho_A = compute_l2_norm_matrix(stiffness_matrix, stiffness_sparsity); deallog <<
-     "stiffness_matrix.l2_norm(): " << rho_A << std::endl; 
-     deallog <<
-     "coupling_matrix.l2_norm(): " << rho_C << std::endl;
-     deallog <<
-     "mass_matrix.l2_norm(): " << rho_C << std::endl; 
-     const double gamma = 10; //(rho_A / (rho_C * rho_C));
-     auto invW1 = linear_operator(mass_matrix, M_inv_umfpack);
-     auto invW = invW1 * invW1;
-     auto Aug = K + gamma * Ct * invW * C;
+    const double gamma = 10;
+    auto invW1 = linear_operator(mass_matrix, M_inv_umfpack);
+    auto invW = invW1 * invW1;
+    auto Aug = K + gamma * Ct * invW * C;
 
-    //deallog << "stiffness_matrix.linfty_norm(): "
-            //<< stiffness_matrix.linfty_norm() << std::endl;
-    //deallog << "coupling_matrix.l1_norm(): " << coupling_matrix.l1_norm()
-            //<< std::endl;
-    //const double gamma =
-        //stiffness_matrix.linfty_norm() /
-        //(coupling_matrix.l1_norm() * coupling_matrix.l1_norm());
+    // deallog << "stiffness_matrix.linfty_norm(): "
+    //<< stiffness_matrix.linfty_norm() << std::endl;
+    // deallog << "coupling_matrix.l1_norm(): " << coupling_matrix.l1_norm()
+    //<< std::endl;
+    // const double gamma =
+    // stiffness_matrix.linfty_norm() /
+    //(coupling_matrix.l1_norm() * coupling_matrix.l1_norm());
 
-    //auto Aug = K + gamma * Ct * invW * C;
+    // auto Aug = K + gamma * Ct * invW * C;
     deallog << "gamma: " << gamma << std::endl;
 
     BlockVector<double> solution_block;
@@ -988,10 +991,11 @@ void DistributedLagrangeProblem<dim, spacedim>::output_results() {
   std::ofstream embedded_out_file("grid-int.gnuplot");
 
   embedded_out.attach_dof_handler(*embedded_dh);
-  embedded_out.add_data_vector(lambda, "lambda");
-  embedded_out.add_data_vector(embedded_value, "g");
-  embedded_out.build_patches(*embedded_mapping,
-                             parameters.embedded_space_finite_element_degree);
+  embedded_out.add_data_vector(lambda, "lambda",
+                               DataOut<dim, spacedim>::type_cell_data);
+  embedded_out.add_data_vector(embedded_value, "g",
+                               DataOut<dim, spacedim>::type_cell_data);
+  embedded_out.build_patches(*embedded_mapping, 1.);
   // embedded_out.write_vtu(embedded_out_file);
   embedded_out.write_gnuplot(embedded_out_file);
 
