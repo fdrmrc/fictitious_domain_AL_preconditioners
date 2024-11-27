@@ -991,10 +991,11 @@ void DistributedLagrangeProblem<dim, spacedim>::output_results() {
   std::ofstream embedded_out_file("grid-int.gnuplot");
 
   embedded_out.attach_dof_handler(*embedded_dh);
-  embedded_out.add_data_vector(lambda, "lambda",
-                               DataOut<dim, spacedim>::type_cell_data);
-  embedded_out.add_data_vector(embedded_value, "g",
-                               DataOut<dim, spacedim>::type_cell_data);
+  const auto dg_or_not = parameters.embedded_space_finite_element_degree == 0
+                             ? DataOut<dim, spacedim>::type_cell_data
+                             : DataOut<dim, spacedim>::type_automatic;
+  embedded_out.add_data_vector(lambda, "lambda", dg_or_not);
+  embedded_out.add_data_vector(embedded_value, "g", dg_or_not);
   embedded_out.build_patches(*embedded_mapping, 1.);
   // embedded_out.write_vtu(embedded_out_file);
   embedded_out.write_gnuplot(embedded_out_file);
