@@ -4,8 +4,6 @@
 if test ! -e block_demo.cc ; then
   echo "You must run this script from the top level directory of the project!"
   exit
-  mkdir build_dir && cd build_dir &&
-  cmake .. && make -j4 
 else
 # Compile code
   cd build_dir &&
@@ -13,9 +11,9 @@ else
 fi
 
 
-declare -a array=("../parameters/circle.prm" 
-                  "../parameters/square.prm" 
-                  "../parameters/flower.prm")
+declare -a array=("../parameters/circle/circle.prm" 
+                  "../parameters/square/square.prm" 
+                  "../parameters/flower/flower.prm")
 
 
 echo -e "\n******RUNNING THE EXPERIMENTS******\n"
