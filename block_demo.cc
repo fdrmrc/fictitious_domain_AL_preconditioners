@@ -969,7 +969,8 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     Vector<double> tmp;
     tmp.reinit(embedding_rhs.size());
     tmp = gamma * Ct * invW * embedded_rhs;
-    system_rhs_block.block(0) += tmp;  // ! augmented
+    system_rhs_block.block(0) = embedding_rhs;
+    system_rhs_block.block(0).add(1., tmp);  // ! augmented
     system_rhs_block.block(1) = embedded_rhs;
 
     SolverControl control_lagrangian(6000, 1e-11, false, false);
