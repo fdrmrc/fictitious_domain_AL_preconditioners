@@ -1,7 +1,3 @@
-#ifdef DEAL_II_WITH_TRILINOS
-#include <Epetra_CrsMatrix.h>
-#include <Epetra_RowMatrixTransposer.h>
-#endif
 #include <deal.II/base/data_out_base.h>
 #include <deal.II/base/exceptions.h>
 #include <deal.II/base/logstream.h>
