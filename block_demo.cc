@@ -228,10 +228,19 @@ DistributedLagrangeProblem<dim, spacedim>::DistributedLagrangeProblem(
               TimerOutput::cpu_and_wall_times) {
   embedded_configuration_function.declare_parameters_call_back.connect(
       []() -> void {
-        ParameterAcceptor::prm.set("Function constants", "R=.3, Cx=.4,Cy=.4");
+        if constexpr (spacedim == 2) {
+          ParameterAcceptor::prm.set("Function constants", "R=.3, Cx=.4,Cy=.4");
 
-        ParameterAcceptor::prm.set("Function expression",
-                                   "R*cos(2*pi*x)+Cx; R*sin(2*pi*x)+Cy");
+          ParameterAcceptor::prm.set("Function expression",
+                                     "R*cos(2*pi*x)+Cx; R*sin(2*pi*x)+Cy");
+        } else if constexpr (spacedim == 3) {
+          ParameterAcceptor::prm.set("Function constants",
+                                     "R=.3, Cx=.4,Cy=.4,Cy=.4");
+
+          ParameterAcceptor::prm.set(
+              "Function expression",
+              "R*cos(2*pi*x)+Cx; R*sin(2*pi*x)+Cy;R*sin(2*pi*z)+Cz");
+        }
       });
 
   embedding_rhs_function.declare_parameters_call_back.connect(
@@ -263,65 +272,78 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
 
   space_grid = std::make_unique<Triangulation<spacedim>>();
 
-  GridGenerator::hyper_cube(*space_grid, 0., 1, true);
+  GridGenerator::hyper_cube(*space_grid, -1., 1, true);
 
   space_grid->refine_global(parameters.initial_refinement);
   space_grid_tools_cache =
       std::make_unique<GridTools::Cache<spacedim, spacedim>>(*space_grid);
 
-  std::ofstream out_ext("grid-ext.gnuplot");
-  GridOut grid_out_ext;
-  grid_out_ext.write_gnuplot(*space_grid, out_ext);
-  out_ext.close();
-  std::cout << "External Grid written to grid-ext.gnuplot" << std::endl;
+  if (space_grid->n_cells() < 2e6) {  // do not dump grid when mesh is too fine
+    std::ofstream out_ext("grid-ext.gnuplot");
+    GridOut grid_out_ext;
+    grid_out_ext.write_gnuplot(*space_grid, out_ext);
+    out_ext.close();
+    std::cout << "External Grid written to grid-ext.gnuplot" << std::endl;
+  }
 
   embedded_grid = std::make_unique<Triangulation<dim, spacedim>>();
-  GridGenerator::hyper_cube(*embedded_grid);
+  if constexpr (spacedim == 2)
+    GridGenerator::hyper_cube(*embedded_grid);
+  else if constexpr (spacedim == 3)
+    GridGenerator::hyper_cube(*embedded_grid, -.44, .44, false);
   embedded_grid->refine_global(parameters.initial_embedded_refinement);
 
-  embedded_configuration_fe = std::make_unique<FESystem<dim, spacedim>>(
-      FE_Q<dim, spacedim>(
-          parameters.embedded_configuration_finite_element_degree) ^
-      spacedim);
+  if constexpr (spacedim == 2) {
+    embedded_configuration_fe = std::make_unique<FESystem<dim, spacedim>>(
+        FE_Q<dim, spacedim>(
+            parameters.embedded_configuration_finite_element_degree) ^
+        spacedim);
 
-  embedded_configuration_dh =
-      std::make_unique<DoFHandler<dim, spacedim>>(*embedded_grid);
+    embedded_configuration_dh =
+        std::make_unique<DoFHandler<dim, spacedim>>(*embedded_grid);
 
-  embedded_configuration_dh->distribute_dofs(*embedded_configuration_fe);
-  embedded_configuration.reinit(embedded_configuration_dh->n_dofs());
+    embedded_configuration_dh->distribute_dofs(*embedded_configuration_fe);
+    embedded_configuration.reinit(embedded_configuration_dh->n_dofs());
 
-  VectorTools::interpolate(*embedded_configuration_dh,
-                           embedded_configuration_function,
-                           embedded_configuration);
+    VectorTools::interpolate(*embedded_configuration_dh,
+                             embedded_configuration_function,
+                             embedded_configuration);
 
-  if (parameters.use_displacement == true)
-    embedded_mapping =
-        std::make_unique<MappingQEulerian<dim, Vector<double>, spacedim>>(
-            parameters.embedded_configuration_finite_element_degree,
-            *embedded_configuration_dh, embedded_configuration);
-  else
-    embedded_mapping =
-        std::make_unique<MappingFEField<dim, spacedim, Vector<double>>>(
-            *embedded_configuration_dh, embedded_configuration);
+    if (parameters.use_displacement == true)
+      embedded_mapping =
+          std::make_unique<MappingQEulerian<dim, Vector<double>, spacedim>>(
+              parameters.embedded_configuration_finite_element_degree,
+              *embedded_configuration_dh, embedded_configuration);
+    else
+      embedded_mapping =
+          std::make_unique<MappingFEField<dim, spacedim, Vector<double>>>(
+              *embedded_configuration_dh, embedded_configuration);
+  } else if constexpr (spacedim == 3) {
+    embedded_mapping = std::make_unique<MappingQ1<dim, spacedim>>();
+  } else {
+    AssertThrow(false, ExcNotImplemented());
+  }
 
   setup_embedded_dofs();
 
-  std::vector<Point<spacedim>> support_points(embedded_dh->n_dofs());
-  if (parameters.delta_refinement != 0)
-    DoFTools::map_dofs_to_support_points(*embedded_mapping, *embedded_dh,
-                                         support_points);
+  if constexpr (spacedim == 2) {
+    std::vector<Point<spacedim>> support_points(embedded_dh->n_dofs());
+    if (parameters.delta_refinement != 0)
+      DoFTools::map_dofs_to_support_points(*embedded_mapping, *embedded_dh,
+                                           support_points);
 
-  for (unsigned int i = 0; i < parameters.delta_refinement; ++i) {
-    const auto point_locations = GridTools::compute_point_locations(
-        *space_grid_tools_cache, support_points);
-    const auto &cells = std::get<0>(point_locations);
-    for (auto &cell : cells) {
-      cell->set_refine_flag();
-      for (const auto face_no : cell->face_indices())
-        if (!cell->at_boundary(face_no))
-          cell->neighbor(face_no)->set_refine_flag();
+    for (unsigned int i = 0; i < parameters.delta_refinement; ++i) {
+      const auto point_locations = GridTools::compute_point_locations(
+          *space_grid_tools_cache, support_points);
+      const auto &cells = std::get<0>(point_locations);
+      for (auto &cell : cells) {
+        cell->set_refine_flag();
+        for (const auto face_no : cell->face_indices())
+          if (!cell->at_boundary(face_no))
+            cell->neighbor(face_no)->set_refine_flag();
+      }
+      space_grid->execute_coarsening_and_refinement();
     }
-    space_grid->execute_coarsening_and_refinement();
   }
 
   if (space_grid->n_cells() < 2e6) {  // do not dump grid when mesh is too fine
@@ -343,12 +365,12 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
           << embedded_space_maximal_diameter / embedding_space_minimal_diameter
           << std::endl;
 
-  AssertThrow(
-      embedded_space_maximal_diameter < embedding_space_minimal_diameter,
-      ExcMessage("The embedding grid is too refined (or the embedded grid "
-                 "is too coarse). Adjust the parameters so that the minimal"
-                 "grid size of the embedding grid is larger "
-                 "than the maximal grid size of the embedded grid."));
+  // AssertThrow(
+  //     embedded_space_maximal_diameter < embedding_space_minimal_diameter,
+  //     ExcMessage("The embedding grid is too refined (or the embedded grid "
+  //                "is too coarse). Adjust the parameters so that the minimal"
+  //                "grid size of the embedding grid is larger "
+  //                "than the maximal grid size of the embedded grid."));
 
   setup_embedding_dofs();
 }
@@ -361,7 +383,7 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_embedding_dofs() {
   space_dh->distribute_dofs(*space_fe);
 
   DoFTools::make_hanging_node_constraints(*space_dh, constraints);
-  for (const types::boundary_id id : parameters.dirichlet_ids) {
+  for (const types::boundary_id id : {0, 1, 2, 3, 4, 5}) {
     VectorTools::interpolate_boundary_values(
         *space_dh, id, embedding_dirichlet_boundary_function, constraints);
   }
@@ -1094,7 +1116,8 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
 
     auto invW1 = linear_operator(mass_matrix, M_inv_umfpack);
     auto invW = invW1 * invW1;
-    auto Aug = K + gamma * Ct * invW * C;
+    // auto Aug = K + gamma * Ct * invW * C;
+    auto Aug = linear_operator(augmented_block);
 
     deallog << "gamma: " << gamma << std::endl;
 
@@ -1251,7 +1274,8 @@ int main(int argc, char **argv) {
     using namespace dealii;
     using namespace Step60;
 
-    const unsigned int dim = 1, spacedim = 2;
+    // const unsigned int dim = 1, spacedim = 2;
+    const unsigned int dim = 2, spacedim = 3;
 
     DistributedLagrangeProblem<dim, spacedim>::Parameters parameters;
     DistributedLagrangeProblem<dim, spacedim> problem(parameters);
