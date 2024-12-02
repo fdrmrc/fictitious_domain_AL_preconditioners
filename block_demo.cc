@@ -21,20 +21,16 @@
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/diagonal_matrix.h>
 #include <deal.II/lac/linear_operator.h>
-#include <deal.II/lac/linear_operator_tools.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/solver_minres.h>
 #include <deal.II/lac/sparse_direct.h>
-#include <deal.II/lac/sparse_matrix.h>
-#include <deal.II/lac/sparsity_pattern.h>
-#include <deal.II/lac/trilinos_sparse_matrix.h>
+#include <deal.II/lac/trilinos_precondition.h>
 #include <deal.II/lac/vector.h>
 #include <deal.II/non_matching/coupling.h>
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/data_out_dof_data.h>
-#include <deal.II/numerics/matrix_tools.h>
 #include <deal.II/numerics/vector_tools.h>
 
 #include <cmath>
@@ -47,11 +43,6 @@
 #include "augmented_lagrangian_preconditioner.h"
 #include "rational_preconditioner.h"
 #include "utilities.h"
-
-#ifdef DEAL_II_WITH_TRILINOS
-#include <Epetra_CrsMatrix.h>
-#include <Epetra_RowMatrixTransposer.h>
-#endif
 
 namespace Step60 {
 using namespace dealii;
@@ -157,7 +148,6 @@ class DistributedLagrangeProblem {
   SparsityPattern coupling_sparsity;
 
   SparseMatrix<double> stiffness_matrix;
-  SparseMatrix<double> stiffness_matrix_copy;
   SparseMatrix<double> mass_matrix;
   SparseMatrix<double> Mass_matrix;
   SparseMatrix<double> mass_matrix_immersed_dg;
@@ -228,10 +218,19 @@ DistributedLagrangeProblem<dim, spacedim>::DistributedLagrangeProblem(
               TimerOutput::cpu_and_wall_times) {
   embedded_configuration_function.declare_parameters_call_back.connect(
       []() -> void {
-        ParameterAcceptor::prm.set("Function constants", "R=.3, Cx=.4,Cy=.4");
+        if constexpr (spacedim == 2) {
+          ParameterAcceptor::prm.set("Function constants", "R=.3, Cx=.4,Cy=.4");
 
-        ParameterAcceptor::prm.set("Function expression",
-                                   "R*cos(2*pi*x)+Cx; R*sin(2*pi*x)+Cy");
+          ParameterAcceptor::prm.set("Function expression",
+                                     "R*cos(2*pi*x)+Cx; R*sin(2*pi*x)+Cy");
+        } else if constexpr (spacedim == 3) {
+          ParameterAcceptor::prm.set("Function constants",
+                                     "R=.3, Cx=.4,Cy=.4,Cy=.4");
+
+          ParameterAcceptor::prm.set(
+              "Function expression",
+              "R*cos(2*pi*x)+Cx; R*sin(2*pi*x)+Cy;R*sin(2*pi*z)+Cz");
+        }
       });
 
   embedding_rhs_function.declare_parameters_call_back.connect(
@@ -263,65 +262,79 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
 
   space_grid = std::make_unique<Triangulation<spacedim>>();
 
-  GridGenerator::hyper_cube(*space_grid, 0., 1, true);
+  GridGenerator::hyper_cube(*space_grid, -1., 1, true);
 
   space_grid->refine_global(parameters.initial_refinement);
   space_grid_tools_cache =
       std::make_unique<GridTools::Cache<spacedim, spacedim>>(*space_grid);
 
-  std::ofstream out_ext("grid-ext.gnuplot");
-  GridOut grid_out_ext;
-  grid_out_ext.write_gnuplot(*space_grid, out_ext);
-  out_ext.close();
-  std::cout << "External Grid written to grid-ext.gnuplot" << std::endl;
+  if (space_grid->n_cells() < 2e6) {  // do not dump grid when mesh is too fine
+    std::ofstream out_ext("grid-ext.gnuplot");
+    GridOut grid_out_ext;
+    grid_out_ext.write_gnuplot(*space_grid, out_ext);
+    out_ext.close();
+    std::cout << "External Grid written to grid-ext.gnuplot" << std::endl;
+  }
 
   embedded_grid = std::make_unique<Triangulation<dim, spacedim>>();
-  GridGenerator::hyper_cube(*embedded_grid);
+  if constexpr (spacedim == 2)
+    GridGenerator::hyper_cube(*embedded_grid);
+  else if constexpr (spacedim == 3)
+    GridGenerator::hyper_sphere(*embedded_grid, {0.1, -0.1, 0.1}, 0.24);
+  // GridGenerator::hyper_cube(*embedded_grid, -.44, .44, false);
   embedded_grid->refine_global(parameters.initial_embedded_refinement);
 
-  embedded_configuration_fe = std::make_unique<FESystem<dim, spacedim>>(
-      FE_Q<dim, spacedim>(
-          parameters.embedded_configuration_finite_element_degree) ^
-      spacedim);
+  if constexpr (spacedim == 2) {
+    embedded_configuration_fe = std::make_unique<FESystem<dim, spacedim>>(
+        FE_Q<dim, spacedim>(
+            parameters.embedded_configuration_finite_element_degree) ^
+        spacedim);
 
-  embedded_configuration_dh =
-      std::make_unique<DoFHandler<dim, spacedim>>(*embedded_grid);
+    embedded_configuration_dh =
+        std::make_unique<DoFHandler<dim, spacedim>>(*embedded_grid);
 
-  embedded_configuration_dh->distribute_dofs(*embedded_configuration_fe);
-  embedded_configuration.reinit(embedded_configuration_dh->n_dofs());
+    embedded_configuration_dh->distribute_dofs(*embedded_configuration_fe);
+    embedded_configuration.reinit(embedded_configuration_dh->n_dofs());
 
-  VectorTools::interpolate(*embedded_configuration_dh,
-                           embedded_configuration_function,
-                           embedded_configuration);
+    VectorTools::interpolate(*embedded_configuration_dh,
+                             embedded_configuration_function,
+                             embedded_configuration);
 
-  if (parameters.use_displacement == true)
-    embedded_mapping =
-        std::make_unique<MappingQEulerian<dim, Vector<double>, spacedim>>(
-            parameters.embedded_configuration_finite_element_degree,
-            *embedded_configuration_dh, embedded_configuration);
-  else
-    embedded_mapping =
-        std::make_unique<MappingFEField<dim, spacedim, Vector<double>>>(
-            *embedded_configuration_dh, embedded_configuration);
+    if (parameters.use_displacement == true)
+      embedded_mapping =
+          std::make_unique<MappingQEulerian<dim, Vector<double>, spacedim>>(
+              parameters.embedded_configuration_finite_element_degree,
+              *embedded_configuration_dh, embedded_configuration);
+    else
+      embedded_mapping =
+          std::make_unique<MappingFEField<dim, spacedim, Vector<double>>>(
+              *embedded_configuration_dh, embedded_configuration);
+  } else if constexpr (spacedim == 3) {
+    embedded_mapping = std::make_unique<MappingQ1<dim, spacedim>>();
+  } else {
+    AssertThrow(false, ExcNotImplemented());
+  }
 
   setup_embedded_dofs();
 
-  std::vector<Point<spacedim>> support_points(embedded_dh->n_dofs());
-  if (parameters.delta_refinement != 0)
-    DoFTools::map_dofs_to_support_points(*embedded_mapping, *embedded_dh,
-                                         support_points);
+  if constexpr (spacedim == 2) {
+    std::vector<Point<spacedim>> support_points(embedded_dh->n_dofs());
+    if (parameters.delta_refinement != 0)
+      DoFTools::map_dofs_to_support_points(*embedded_mapping, *embedded_dh,
+                                           support_points);
 
-  for (unsigned int i = 0; i < parameters.delta_refinement; ++i) {
-    const auto point_locations = GridTools::compute_point_locations(
-        *space_grid_tools_cache, support_points);
-    const auto &cells = std::get<0>(point_locations);
-    for (auto &cell : cells) {
-      cell->set_refine_flag();
-      for (const auto face_no : cell->face_indices())
-        if (!cell->at_boundary(face_no))
-          cell->neighbor(face_no)->set_refine_flag();
+    for (unsigned int i = 0; i < parameters.delta_refinement; ++i) {
+      const auto point_locations = GridTools::compute_point_locations(
+          *space_grid_tools_cache, support_points);
+      const auto &cells = std::get<0>(point_locations);
+      for (auto &cell : cells) {
+        cell->set_refine_flag();
+        for (const auto face_no : cell->face_indices())
+          if (!cell->at_boundary(face_no))
+            cell->neighbor(face_no)->set_refine_flag();
+      }
+      space_grid->execute_coarsening_and_refinement();
     }
-    space_grid->execute_coarsening_and_refinement();
   }
 
   if (space_grid->n_cells() < 2e6) {  // do not dump grid when mesh is too fine
@@ -343,12 +356,12 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
           << embedded_space_maximal_diameter / embedding_space_minimal_diameter
           << std::endl;
 
-  AssertThrow(
-      embedded_space_maximal_diameter < embedding_space_minimal_diameter,
-      ExcMessage("The embedding grid is too refined (or the embedded grid "
-                 "is too coarse). Adjust the parameters so that the minimal"
-                 "grid size of the embedding grid is larger "
-                 "than the maximal grid size of the embedded grid."));
+  // AssertThrow(
+  //     embedded_space_maximal_diameter < embedding_space_minimal_diameter,
+  //     ExcMessage("The embedding grid is too refined (or the embedded grid "
+  //                "is too coarse). Adjust the parameters so that the minimal"
+  //                "grid size of the embedding grid is larger "
+  //                "than the maximal grid size of the embedded grid."));
 
   setup_embedding_dofs();
 }
@@ -361,7 +374,7 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_embedding_dofs() {
   space_dh->distribute_dofs(*space_fe);
 
   DoFTools::make_hanging_node_constraints(*space_dh, constraints);
-  for (const types::boundary_id id : parameters.dirichlet_ids) {
+  for (const types::boundary_id id : {0, 1, 2, 3, 4, 5}) {
     VectorTools::interpolate_boundary_values(
         *space_dh, id, embedding_dirichlet_boundary_function, constraints);
   }
@@ -440,8 +453,6 @@ void DistributedLagrangeProblem<dim, spacedim>::assemble_system() {
         embedding_rhs_function, embedding_rhs,
         static_cast<const Function<spacedim> *>(nullptr), constraints);
 
-    // stiffness_matrix_copy.copy_from(stiffness_matrix);
-
     MatrixTools::create_mass_matrix(
         *space_dh, QGauss<spacedim>(2 * space_fe->degree + 1), Mass_matrix,
         static_cast<const Function<spacedim> *>(nullptr), constraints);
@@ -487,14 +498,26 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
 
   // // Old way
   if (std::strcmp(parameters.solver.c_str(), "CG") == 0) {
-    SparseDirectUMFPACK K_inv_umfpack;
-    K_inv_umfpack.initialize(stiffness_matrix);
-
     auto K = linear_operator(stiffness_matrix);
+    auto K_inv = identity_operator(K);
+
+    // Depending if we are in 2D or 3D, use a sparse direct solver or not
+    SparseDirectUMFPACK K_inv_umfpack;
+    TrilinosWrappers::PreconditionAMG prec_amg;
+    SolverControl K_inv_control(1000, 1e-12, false, true);
+    SolverCG<Vector<double>> K_inv_cg(K_inv_control);
+    if constexpr (spacedim == 3) {
+      prec_amg.initialize(stiffness_matrix);
+      K_inv = inverse_operator(K, K_inv_cg, prec_amg);
+    } else if constexpr (spacedim == 2) {
+      K_inv_umfpack.initialize(stiffness_matrix);
+      K_inv = linear_operator(K, K_inv_umfpack);
+    } else {
+      Assert(false, ExcNotImplemented());
+    }
+
     auto Ct = linear_operator(coupling_matrix);
     auto C = transpose_operator(Ct);
-
-    auto K_inv = linear_operator(K, K_inv_umfpack);
 
     auto S = C * K_inv * Ct;
     SolverCG<Vector<double>> solver_cg(schur_solver_control);
@@ -964,137 +987,19 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
       inverse_squares(i) = 1. / (mass_matrix_immersed_dg.diag_element(i) *
                                  mass_matrix_immersed_dg.diag_element(i));
 
-    // Create the transpose.
+    TrilinosWrappers::PreconditionAMG amg_prec;  //!
+    // amg_prec.initialize(augmented_block);                           //!
+    build_AMG_augmented_block(*space_dh, coupling_matrix, stiffness_matrix,
+                              coupling_sparsity, inverse_squares, constraints,
+                              gamma, amg_prec);
+    auto prec_for_cg = linear_operator(stiffness_matrix, amg_prec);  //!
 
-    // First, wrap the original matrix in a Trilinos matrix
-    TrilinosWrappers::SparseMatrix coupling_trilinos;
-    SparsityPattern sp;
-    sp.copy_from(coupling_sparsity);
-    coupling_trilinos.reinit(coupling_matrix, 1e-15, true, &sp);
-    auto trilinos_matrix = coupling_trilinos.trilinos_matrix();
-
-    // Now, transpose this matrix through Trilinos
-    Epetra_RowMatrixTransposer transposer(&trilinos_matrix);
-    Epetra_CrsMatrix *transpose_matrix;
-    int err = transposer.CreateTranspose(true, transpose_matrix);
-    AssertThrow(err == 0, ExcMessage("Transpose failure!"));
-#ifdef DEBUG
-    std::cout << "rows original matrix:" << trilinos_matrix.NumGlobalRows()
-              << std::endl;
-    std::cout << "cols original matrix:" << trilinos_matrix.NumGlobalCols()
-              << std::endl;
-    std::cout << "rows:" << transpose_matrix->NumGlobalRows() << std::endl;
-    std::cout << "cols:" << transpose_matrix->NumGlobalCols() << std::endl;
-#endif
-
-    // Now, store the transpose in a deal.II matrix for mat-mat multiplication
-
-    // First, create the sparsity pattern for the transpose
-    DynamicSparsityPattern dsp_coupling_sparsity_transposed;
-    dsp_coupling_sparsity_transposed.reinit(coupling_sparsity.n_cols(),
-                                            coupling_sparsity.n_rows());
-
-    // Loop over the original sparsity pattern
-    for (unsigned int row = 0; row < coupling_sparsity.n_rows(); ++row) {
-      for (dealii::SparsityPattern::iterator it = coupling_sparsity.begin(row);
-           it != coupling_sparsity.end(row); ++it) {
-        unsigned int col = it->column();
-        // Insert the transposed entry
-        dsp_coupling_sparsity_transposed.add(col, row);
-      }
-    }
-    SparsityPattern coupling_sparsity_transposed;
-    coupling_sparsity_transposed.copy_from(dsp_coupling_sparsity_transposed);
-    SparseMatrix<double> coupling_t;
-    coupling_t.reinit(coupling_sparsity_transposed);
-
-    // Now populate the matrix
-    const int num_rows = coupling_t.m();
-    for (int i = 0; i < num_rows; ++i) {
-      int num_entries;
-      double *values;
-      int *indices;
-
-      transpose_matrix->ExtractMyRowView(i, num_entries, values, indices);
-
-      for (int j = 0; j < num_entries; ++j) {
-        coupling_t.set(i, transpose_matrix->GCID(indices[j]), values[j]);
-      }
-    }
-#ifdef DEBUG
-    std::cout << "Populated the transpose matrix" << std::endl;
-#endif
-
-    // Now, perform matmat multiplication
-    SparseMatrix<double> augmented_block, BtWinvB;
-    DynamicSparsityPattern dsp_aux(space_dh->n_dofs(), space_dh->n_dofs());
-    const unsigned int dofs_per_cell = space_fe->n_dofs_per_cell();
-    std::vector<types::global_dof_index> current_dof_indices(dofs_per_cell);
-    dsp_aux.compute_mmult_pattern(coupling_sparsity,
-                                  coupling_sparsity_transposed);
-
-    // Add sparsity from matrix2
-    for (unsigned int row = 0; row < space_dh->n_dofs(); ++row) {
-      for (auto it = stiffness_matrix.begin(row);
-           it != stiffness_matrix.end(row); ++it) {
-        dsp_aux.add(row, it->column());
-      }
-    }
-
-    SparsityPattern sp_aux;
-    sp_aux.copy_from(dsp_aux);
-    BtWinvB.reinit(sp_aux);
-
-    // Check that is the transpose
-
-#ifdef DEBUG
-    for (unsigned int i = 0; i < coupling_matrix.m(); ++i)
-      for (unsigned int j = 0; j < coupling_matrix.n(); ++j) {
-        std::cout << "Entry " << coupling_matrix.el(i, j) << " and "
-                  << coupling_t.el(j, i) << std::endl;
-        Assert((coupling_matrix.el(i, j) - coupling_t.el(j, i) < 1e-14),
-               ExcMessage("Transpose matrix is wrong!"));
-      }
-#endif
-
-    SparseMatrix<double> coupling_matrix_copy;
-    coupling_matrix_copy.reinit(coupling_matrix);
-    coupling_matrix_copy.copy_from(coupling_matrix);
-    // inverse_squares = 1.;
-    coupling_matrix_copy.mmult(BtWinvB, coupling_t, inverse_squares, false);
-#ifdef DEBUG
-    std::cout << "Performed mat-mat multiplication" << std::endl;
-    std::cout << "Rows " << BtWinvB.m() << std::endl;
-    std::cout << "Cols " << BtWinvB.n() << std::endl;
-    std::cout << "Norm" << BtWinvB.l1_norm() << std::endl;
-#endif
-
-    stiffness_matrix_copy.reinit(sp_aux);
-    MatrixTools::create_laplace_matrix(
-        *space_dh, QGauss<spacedim>(2 * space_fe->degree + 1),
-        stiffness_matrix_copy, embedding_rhs_function, embedding_rhs_copy,
-        static_cast<const Function<spacedim> *>(nullptr), constraints);
-
-    augmented_block.reinit(stiffness_matrix_copy);
-    augmented_block.copy_from(stiffness_matrix_copy);
-    augmented_block.add(gamma, BtWinvB);
-
-    TrilinosWrappers::PreconditionAMG amg_prec;                     //!
-    amg_prec.initialize(augmented_block);                           //!
-    auto prec_for_cg = linear_operator(augmented_block, amg_prec);  //!
-    std::cout << "Initialized AMG" << std::endl;
-
-// Print matrices to file to check if one is the transpose of the other
-#ifdef DEBUG
-    coupling_matrix.print_formatted(std::cout);
-    coupling_t.print_formatted(std::cout);
-    inverse_squares.print(std::cout);
-#endif
 #endif
 
     auto invW1 = linear_operator(mass_matrix, M_inv_umfpack);
     auto invW = invW1 * invW1;
     auto Aug = K + gamma * Ct * invW * C;
+    // auto Aug = linear_operator(augmented_block);
 
     deallog << "gamma: " << gamma << std::endl;
 
@@ -1117,7 +1022,7 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     system_rhs_block.block(0).add(1., tmp);  // ! augmented
     system_rhs_block.block(1) = embedded_rhs;
 
-    SolverControl control_lagrangian(6000, 1e-11, false, true);
+    SolverControl control_lagrangian(1000, 1e-4, false, true);
     SolverCG<Vector<double>> solver_lagrangian(control_lagrangian);
 
 #ifdef DEAL_II_WITH_TRILINOS
@@ -1251,7 +1156,8 @@ int main(int argc, char **argv) {
     using namespace dealii;
     using namespace Step60;
 
-    const unsigned int dim = 1, spacedim = 2;
+    // const unsigned int dim = 1, spacedim = 2;
+    const unsigned int dim = 2, spacedim = 3;
 
     DistributedLagrangeProblem<dim, spacedim>::Parameters parameters;
     DistributedLagrangeProblem<dim, spacedim> problem(parameters);
