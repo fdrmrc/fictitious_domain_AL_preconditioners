@@ -966,7 +966,7 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
 
     // IdentityMatrix W(mass_matrix.m());
     // auto invW = linear_operator(W);
-    const double gamma = 10;
+    const double gamma = 1;
 #ifdef DEAL_II_WITH_TRILINOS
 
     // Construct explicitely vector storing M^{-2}
