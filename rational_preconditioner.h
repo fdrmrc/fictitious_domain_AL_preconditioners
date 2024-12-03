@@ -31,7 +31,7 @@ class RationalPreconditioner {
     v.block(0) = K_inv * (u.block(0));
 
     TrilinosWrappers::PreconditionAMG prec_amg;
-    SolverControl solver_control(2000, 1e-14, false, false);
+    SolverControl solver_control(2000, 1e-4, false, false);
     SolverCG<Vector<double>> solver_cg(solver_control);
 
     const unsigned int n_poles = poles.size();
