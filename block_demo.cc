@@ -29,6 +29,7 @@
 #include <deal.II/lac/sparse_direct.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/sparsity_pattern.h>
+#include <deal.II/lac/trilinos_precondition.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 #include <deal.II/lac/vector.h>
 #include <deal.II/non_matching/coupling.h>
@@ -648,10 +649,21 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
   // // GMRES with ELMAN right upper triangular preconditioner
   else if (std::strcmp(parameters.solver.c_str(), "ELMAN_triang") == 0) {
     std::cout << "Solving with ELMAN right-preconditioning" << std::endl;
-    SparseDirectUMFPACK K_inv_umfpack;
-    K_inv_umfpack.initialize(stiffness_matrix);
 
+    // SparseDirectUMFPACK K_inv_umfpack;
+    // K_inv_umfpack.initialize(stiffness_matrix);
+    // auto K_inv = linear_operator(K, K_inv_umfpack);
+    SolverControl control_cg(1000, 1e-13, false, false);
+    SolverCG<Vector<double>> solver_K(control_cg);
     auto K = linear_operator(stiffness_matrix);
+    TrilinosWrappers::PreconditionAMG amg_for_K;
+    amg_for_K.initialize(stiffness_matrix);
+#ifdef DEAL_II_WITH_TRILINOS
+    auto K_inv = inverse_operator(K, solver_K, amg_for_K);
+#else
+    auto K_inv = inverse_operator(K, solver_K, PreconditionIdentity());
+#endif
+
     auto Ct = linear_operator(coupling_matrix);
     auto C = transpose_operator(Ct);
     auto M = linear_operator(mass_matrix);
@@ -662,7 +674,6 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     SolverCG<Vector<double>> solver_cg_c_ct(c_ct_solver_control);
     auto C_Ct_inv =
         inverse_operator(C_Ct, solver_cg_c_ct, PreconditionIdentity());
-    auto K_inv = linear_operator(K, K_inv_umfpack);
 
     auto S_inv = (C_Ct_inv * C * K * Ct * C_Ct_inv);
     auto AA =
@@ -1117,7 +1128,7 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     system_rhs_block.block(0).add(1., tmp);  // ! augmented
     system_rhs_block.block(1) = embedded_rhs;
 
-    SolverControl control_lagrangian(6000, 1e-11, false, true);
+    SolverControl control_lagrangian(100, 1e-2, false, true);
     SolverCG<Vector<double>> solver_lagrangian(control_lagrangian);
 
 #ifdef DEAL_II_WITH_TRILINOS
