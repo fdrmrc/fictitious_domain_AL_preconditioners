@@ -62,46 +62,6 @@
 #include <Epetra_RowMatrixTransposer.h>
 #endif
 
-// boundary values for the velocity
-template <int spacedim>
-class BoundaryValues : public Function<spacedim> {
- public:
-  BoundaryValues() : Function<spacedim>(spacedim + 1) {}
-
-  virtual double value(const Point<spacedim> &p,
-                       const unsigned int component = 0) const override;
-
-  virtual void vector_value(const Point<spacedim> &p,
-                            Vector<double> &value) const override;
-};
-
-template <int spacedim>
-double BoundaryValues<spacedim>::value(const Point<spacedim> &p,
-                                       const unsigned int component) const {
-  Assert(component < this->n_components,
-         ExcIndexRange(component, 0, this->n_components));
-
-  if (std::abs(p[0] - 1.0) < 1e-14 && component == 0)
-    return 0.0;
-  else if (std::abs(p[0] - 1.0) < 1e-14 && component == 1)
-    return 1.0;
-  // const double x = p[0];
-  // const double y = p[1];
-  // if (component == 0)
-  //   return std::cos(numbers::PI * x) * std::sin(numbers::PI * y);
-  // else if (component == 1)
-  //   return -std::sin(numbers::PI * x) * std::cos(numbers::PI * y);
-
-  return 0;
-}
-
-template <int spacedim>
-void BoundaryValues<spacedim>::vector_value(const Point<spacedim> &p,
-                                            Vector<double> &values) const {
-  for (unsigned int c = 0; c < this->n_components; ++c)
-    values(c) = BoundaryValues<spacedim>::value(p, c);
-}
-
 template <int spacedim>
 class RightHandSide : public TensorFunction<1, spacedim> {
  public:
@@ -117,19 +77,7 @@ class RightHandSide : public TensorFunction<1, spacedim> {
 template <int spacedim>
 Tensor<1, spacedim> RightHandSide<spacedim>::value(
     const Point<spacedim> &p) const {
-  const double x = p[0];
-  const double y = p[1];
-
-  double first = numbers::PI * numbers::PI * std::cos(numbers::PI * x) *
-                     std::sin(numbers::PI * y) -
-                 (y - .5) * (2 * numbers::PI * std::sin(2 * numbers::PI * x)) +
-                 std::sin(2 * numbers::PI * y);
-  double second = -numbers::PI * numbers::PI * std::sin(numbers::PI * x) *
-                      std::cos(numbers::PI * y) -
-                  (x - .5) * (2 * numbers::PI * std::cos(2 * numbers::PI * y)) +
-                  std::cos(2 * numbers::PI * x);
-
-  return Tensor<1, spacedim>({0., 0.});
+  return Tensor<1, spacedim>({1., 1.});
 }
 
 template <int spacedim>
@@ -243,7 +191,7 @@ class IBStokesProblem {
 
     std::list<types::boundary_id> dirichlet_ids{0, 1, 2, 3};
 
-    unsigned int embedding_space_finite_element_degree = 1;
+    unsigned int background_space_finite_element_degree = 1;
 
     unsigned int embedded_space_finite_element_degree = 1;
 
@@ -272,7 +220,7 @@ class IBStokesProblem {
 
   void setup_grids_and_dofs();
 
-  void setup_embedding_dofs();
+  void setup_background_dofs();
 
   void setup_embedded_dofs();
 
@@ -307,9 +255,6 @@ class IBStokesProblem {
       embedded_configuration_function;
 
   std::unique_ptr<Mapping<dim, spacedim>> embedded_mapping;
-
-  //   ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>>
-  //       embedding_rhs_function;
 
   ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>>
       embedded_value_function;
@@ -354,7 +299,7 @@ IBStokesProblem<dim, spacedim>::Parameters::Parameters()
     : ParameterAcceptor("/Distributed Lagrange<" +
                         Utilities::int_to_string(dim) + "," +
                         Utilities::int_to_string(spacedim) + ">/") {
-  add_parameter("Initial embedding space refinement", initial_refinement);
+  add_parameter("Initial background space refinement", initial_refinement);
 
   add_parameter("Initial embedded space refinement",
                 initial_embedded_refinement);
@@ -366,8 +311,8 @@ IBStokesProblem<dim, spacedim>::Parameters::Parameters()
 
   add_parameter("Use displacement in embedded interface", use_displacement);
 
-  add_parameter("Embedding space finite element degree",
-                embedding_space_finite_element_degree);
+  add_parameter("Background space finite element degree",
+                background_space_finite_element_degree);
 
   add_parameter("Embedded space finite element degree",
                 embedded_space_finite_element_degree);
@@ -388,8 +333,7 @@ template <int dim, int spacedim>
 IBStokesProblem<dim, spacedim>::IBStokesProblem(const Parameters &parameters)
     : parameters(parameters),
       embedded_configuration_function("Embedded configuration", spacedim),
-      //   embedding_rhs_function("Embedding rhs function (body force)",
-      //   spacedim),
+
       embedded_value_function("Embedded value", spacedim),
       schur_solver_control("Schur solver control"),
       monitor(std::cout, TimerOutput::summary,
@@ -401,11 +345,6 @@ IBStokesProblem<dim, spacedim>::IBStokesProblem(const Parameters &parameters)
         ParameterAcceptor::prm.set("Function expression",
                                    "R*cos(2*pi*x)+Cx; R*sin(2*pi*x)+Cy");
       });
-
-  //   embedding_rhs_function.declare_parameters_call_back.connect([]() -> void
-  //   {
-  //     ParameterAcceptor::prm.set("Function expression", "0; 0");
-  //   });
 
   embedded_value_function.declare_parameters_call_back.connect([]() -> void {
     ParameterAcceptor::prm.set("Function expression", "1; 1");
@@ -487,38 +426,39 @@ void IBStokesProblem<dim, spacedim>::setup_grids_and_dofs() {
 
   const double embedded_space_maximal_diameter =
       GridTools::maximal_cell_diameter(*embedded_grid, *embedded_mapping);
-  double embedding_space_minimal_diameter =
+  double background_space_minimal_diameter =
       GridTools::minimal_cell_diameter(*space_grid);
 
-  deallog << "Embedding minimal diameter: " << embedding_space_minimal_diameter
+  deallog << "Background minimal diameter: "
+          << background_space_minimal_diameter
           << ", embedded maximal diameter: " << embedded_space_maximal_diameter
           << ", ratio: "
-          << embedded_space_maximal_diameter / embedding_space_minimal_diameter
+          << embedded_space_maximal_diameter / background_space_minimal_diameter
           << std::endl;
 
   AssertThrow(
-      embedded_space_maximal_diameter < embedding_space_minimal_diameter,
-      ExcMessage("The embedding grid is too refined (or the embedded grid "
+      embedded_space_maximal_diameter < background_space_minimal_diameter,
+      ExcMessage("The background grid is too refined (or the embedded grid "
                  "is too coarse). Adjust the parameters so that the minimal"
-                 "grid size of the embedding grid is larger "
+                 "grid size of the background grid is larger "
                  "than the maximal grid size of the embedded grid."));
 
-  setup_embedding_dofs();
+  setup_background_dofs();
 }
 
 template <int dim, int spacedim>
-void IBStokesProblem<dim, spacedim>::setup_embedding_dofs() {
+void IBStokesProblem<dim, spacedim>::setup_background_dofs() {
   // Define background FE
   space_dh = std::make_unique<DoFHandler<spacedim>>(*space_grid);
   velocity_dh = std::make_unique<DoFHandler<spacedim>>(*space_grid);
   velocity_fe = std::make_unique<FESystem<spacedim>>(
-      FE_Q<spacedim>(parameters.embedding_space_finite_element_degree + 1) ^
+      FE_Q<spacedim>(parameters.background_space_finite_element_degree + 1) ^
       spacedim);
 
   space_fe = std::make_unique<FESystem<spacedim>>(
-      FE_Q<spacedim>(parameters.embedding_space_finite_element_degree + 1) ^
+      FE_Q<spacedim>(parameters.background_space_finite_element_degree + 1) ^
           spacedim,
-      FE_Q<spacedim>(parameters.embedding_space_finite_element_degree));
+      FE_Q<spacedim>(parameters.background_space_finite_element_degree));
 
   space_dh->distribute_dofs(*space_fe);
   velocity_dh->distribute_dofs(*velocity_fe);
@@ -539,7 +479,8 @@ void IBStokesProblem<dim, spacedim>::setup_embedding_dofs() {
     DoFTools::make_hanging_node_constraints(*space_dh, constraints);
     for (const unsigned int id : parameters.dirichlet_ids)
       VectorTools::interpolate_boundary_values(
-          *space_dh, id, BoundaryValues<spacedim>(), constraints,
+          *space_dh, id,
+          Functions::ConstantFunction<spacedim>(0., spacedim + 1), constraints,
           space_fe->component_mask(velocities));
   }
   constraints.close();
@@ -598,7 +539,7 @@ void IBStokesProblem<dim, spacedim>::setup_embedding_dofs() {
   solution.reinit(dofs_per_block);
   stokes_rhs.reinit(dofs_per_block);
 
-  deallog << "Embedding dofs: " << space_dh->n_dofs() << std::endl;
+  deallog << "Background dofs: " << space_dh->n_dofs() << std::endl;
 }
 
 template <int dim, int spacedim>
