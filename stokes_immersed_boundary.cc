@@ -1,5 +1,6 @@
 #include <deal.II/base/data_out_base.h>
 #include <deal.II/base/exceptions.h>
+#include <deal.II/base/function.h>
 #include <deal.II/base/logstream.h>
 #include <deal.II/base/parameter_acceptor.h>
 #include <deal.II/base/parsed_function.h>
@@ -80,14 +81,16 @@ double BoundaryValues<spacedim>::value(const Point<spacedim> &p,
   Assert(component < this->n_components,
          ExcIndexRange(component, 0, this->n_components));
 
-  if (component == 0) {
-    if (p[0] < 0)
-      return -1;
-    else if (p[0] > 0)
-      return 1;
-    else
-      return 0;
-  }
+  if (std::abs(p[0] - 1.0) < 1e-14 && component == 0)
+    return 0.0;
+  else if (std::abs(p[0] - 1.0) < 1e-14 && component == 1)
+    return 1.0;
+  // const double x = p[0];
+  // const double y = p[1];
+  // if (component == 0)
+  //   return std::cos(numbers::PI * x) * std::sin(numbers::PI * y);
+  // else if (component == 1)
+  //   return -std::sin(numbers::PI * x) * std::cos(numbers::PI * y);
 
   return 0;
 }
@@ -113,8 +116,20 @@ class RightHandSide : public TensorFunction<1, spacedim> {
 
 template <int spacedim>
 Tensor<1, spacedim> RightHandSide<spacedim>::value(
-    const Point<spacedim> & /*p*/) const {
-  return Tensor<1, spacedim>();
+    const Point<spacedim> &p) const {
+  const double x = p[0];
+  const double y = p[1];
+
+  double first = numbers::PI * numbers::PI * std::cos(numbers::PI * x) *
+                     std::sin(numbers::PI * y) -
+                 (y - .5) * (2 * numbers::PI * std::sin(2 * numbers::PI * x)) +
+                 std::sin(2 * numbers::PI * y);
+  double second = -numbers::PI * numbers::PI * std::sin(numbers::PI * x) *
+                      std::cos(numbers::PI * y) -
+                  (x - .5) * (2 * numbers::PI * std::cos(2 * numbers::PI * y)) +
+                  std::cos(2 * numbers::PI * x);
+
+  return Tensor<1, spacedim>({0., 0.});
 }
 
 template <int spacedim>
@@ -275,8 +290,10 @@ class IBStokesProblem {
 
   std::unique_ptr<Triangulation<spacedim>> space_grid;
   std::unique_ptr<GridTools::Cache<spacedim, spacedim>> space_grid_tools_cache;
+  std::unique_ptr<FESystem<spacedim>> velocity_fe;
   std::unique_ptr<FiniteElement<spacedim>> space_fe;
   std::unique_ptr<DoFHandler<spacedim>> space_dh;
+  std::unique_ptr<DoFHandler<spacedim>> velocity_dh;
 
   std::unique_ptr<Triangulation<dim, spacedim>> embedded_grid;
   std::unique_ptr<FiniteElement<dim, spacedim>> embedded_fe;
@@ -319,8 +336,6 @@ class IBStokesProblem {
 
   BlockVector<double> solution;
   BlockVector<double> stokes_rhs;
-  Vector<double> embedding_rhs;
-  Vector<double> embedding_rhs_copy;
 
   Vector<double> lambda;
   Vector<double> embedded_rhs;
@@ -415,38 +430,11 @@ void IBStokesProblem<dim, spacedim>::setup_grids_and_dofs() {
 
   space_grid = std::make_unique<Triangulation<spacedim>>();
 
-  //   GridGenerator::hyper_cube(*space_grid, 0., 1, true);
-
-  // TODO: remove
-  {
-    std::vector<unsigned int> subdivisions(spacedim, 1);
-    subdivisions[0] = 4;
-
-    const Point<spacedim> bottom_left =
-        (spacedim == 2 ? Point<spacedim>(-2, -1) :  // 2d case
-             Point<spacedim>(-2, 0, -1));           // 3d case
-
-    const Point<spacedim> top_right =
-        (spacedim == 2 ? Point<spacedim>(2, 0) :  // 2d case
-             Point<spacedim>(2, 1, 0));           // 3d case
-
-    GridGenerator::subdivided_hyper_rectangle(*space_grid, subdivisions,
-                                              bottom_left, top_right);
-  }
-
-  for (const auto &cell : space_grid->active_cell_iterators())
-    for (const auto &face : cell->face_iterators())
-      if (face->center()[spacedim - 1] == 0) face->set_all_boundary_ids(1);
+  GridGenerator::hyper_cube(*space_grid, 0., 1, true);
 
   space_grid->refine_global(parameters.initial_refinement);
   space_grid_tools_cache =
       std::make_unique<GridTools::Cache<spacedim, spacedim>>(*space_grid);
-
-  std::ofstream out_ext("grid-ext.gnuplot");
-  GridOut grid_out_ext;
-  grid_out_ext.write_gnuplot(*space_grid, out_ext);
-  out_ext.close();
-  std::cout << "External Grid written to grid-ext.gnuplot" << std::endl;
 
   embedded_grid = std::make_unique<Triangulation<dim, spacedim>>();
   GridGenerator::hyper_cube(*embedded_grid);
@@ -497,14 +485,6 @@ void IBStokesProblem<dim, spacedim>::setup_grids_and_dofs() {
     space_grid->execute_coarsening_and_refinement();
   }
 
-  if (space_grid->n_cells() < 2e6) {  // do not dump grid when mesh is too fine
-    std::ofstream out_refined("grid-refined.gnuplot");
-    GridOut grid_out_refined;
-    grid_out_refined.write_gnuplot(*space_grid, out_refined);
-    out_refined.close();
-    std::cout << "Refined Grid written to grid-refined.gnuplot" << std::endl;
-  }
-
   const double embedded_space_maximal_diameter =
       GridTools::maximal_cell_diameter(*embedded_grid, *embedded_mapping);
   double embedding_space_minimal_diameter =
@@ -530,15 +510,24 @@ template <int dim, int spacedim>
 void IBStokesProblem<dim, spacedim>::setup_embedding_dofs() {
   // Define background FE
   space_dh = std::make_unique<DoFHandler<spacedim>>(*space_grid);
+  velocity_dh = std::make_unique<DoFHandler<spacedim>>(*space_grid);
+  velocity_fe = std::make_unique<FESystem<spacedim>>(
+      FE_Q<spacedim>(parameters.embedding_space_finite_element_degree + 1) ^
+      spacedim);
+
   space_fe = std::make_unique<FESystem<spacedim>>(
       FE_Q<spacedim>(parameters.embedding_space_finite_element_degree + 1) ^
           spacedim,
       FE_Q<spacedim>(parameters.embedding_space_finite_element_degree));
 
   space_dh->distribute_dofs(*space_fe);
+  velocity_dh->distribute_dofs(*velocity_fe);
+  DoFRenumbering::Cuthill_McKee(*space_dh);
+  DoFRenumbering::Cuthill_McKee(
+      *velocity_dh);  // we need to renumber in the same way we renumbered DoFs
+                      // for velocity
 
   A_preconditioner.reset();
-  DoFRenumbering::Cuthill_McKee(*space_dh);
   std::vector<unsigned int> block_component(spacedim + 1, 0);
   block_component[spacedim] = 1;
   DoFRenumbering::component_wise(*space_dh, block_component);
@@ -548,9 +537,10 @@ void IBStokesProblem<dim, spacedim>::setup_embedding_dofs() {
 
     const FEValuesExtractors::Vector velocities(0);
     DoFTools::make_hanging_node_constraints(*space_dh, constraints);
-    VectorTools::interpolate_boundary_values(
-        *space_dh, 1, BoundaryValues<spacedim>(), constraints,
-        space_fe->component_mask(velocities));
+    for (const unsigned int id : parameters.dirichlet_ids)
+      VectorTools::interpolate_boundary_values(
+          *space_dh, id, BoundaryValues<spacedim>(), constraints,
+          space_fe->component_mask(velocities));
   }
   constraints.close();
 
@@ -642,14 +632,13 @@ void IBStokesProblem<dim, spacedim>::setup_coupling() {
 
   const QGauss<dim> quad(parameters.coupling_quadrature_order);
 
-  DynamicSparsityPattern dsp(space_dh->n_dofs(), embedded_dh->n_dofs());
+  DynamicSparsityPattern dsp(velocity_dh->n_dofs(), embedded_dh->n_dofs());
 
-  // Here, we filter the components: we want to couple DoF for velocity with the
+  // Here, we use velocity_dh: we want to couple DoF for velocity with the
   // ones of the multiplier.
   NonMatching::create_coupling_sparsity_pattern(
-      *space_grid_tools_cache, *space_dh, *embedded_dh, quad, dsp,
-      AffineConstraints<double>(), ComponentMask({true, true, false}),
-      ComponentMask(), *embedded_mapping);
+      *velocity_dh, *embedded_dh, quad, dsp, constraints, ComponentMask(),
+      ComponentMask(), MappingQ1<spacedim>(), *embedded_mapping);
   coupling_sparsity.copy_from(dsp);
   coupling_matrix.reinit(coupling_sparsity);
 }
@@ -682,7 +671,7 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
   std::vector<Tensor<1, spacedim>> rhs_values(n_q_points,
                                               Tensor<1, spacedim>());
 
-  //   Quantities related to Stokes' weak form
+  // Precompute stuff for Stokes' weak form
   std::vector<SymmetricTensor<2, spacedim>> symgrad_phi_u(dofs_per_cell);
   std::vector<double> div_phi_u(dofs_per_cell);
   std::vector<Tensor<1, spacedim>> phi_u(dofs_per_cell);
@@ -707,20 +696,20 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
       for (unsigned int i = 0; i < dofs_per_cell; ++i) {
         for (unsigned int j = 0; j <= i; ++j) {
           local_matrix(i, j) +=
-              (2 * (symgrad_phi_u[i] * symgrad_phi_u[j])  // (1)
-               - div_phi_u[i] * phi_p[j]                  // (2)
-               - phi_p[i] * div_phi_u[j])                 // (3)
-              * fe_values.JxW(q);                         // * dx
+              (2 * (symgrad_phi_u[i] * symgrad_phi_u[j])  // symgrad-symgrad
+               - div_phi_u[i] * phi_p[j]                  // div u_i p_j
+               - phi_p[i] * div_phi_u[j])                 // p_i div u_j
+              * fe_values.JxW(q);
 
-          local_preconditioner_matrix(i, j) += (phi_p[i] * phi_p[j])  // (4)
-                                               * fe_values.JxW(q);    // * dx
+          local_preconditioner_matrix(i, j) +=
+              (phi_p[i] * phi_p[j]) * fe_values.JxW(q);
         }
 
         local_rhs(i) += phi_u[i] * rhs_values[q] * fe_values.JxW(q);
       }
     }
 
-    // Use symmetry
+    // exploit symmetry
     for (unsigned int i = 0; i < dofs_per_cell; ++i)
       for (unsigned int j = i + 1; j < dofs_per_cell; ++j)
 
@@ -736,6 +725,7 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
     constraints.distribute_local_to_global(
         local_preconditioner_matrix, local_dof_indices, preconditioner_matrix);
   }
+
   std::cout << "Computing preconditioner ..." << std::endl;
   A_preconditioner =
       std::make_shared<typename InnerPreconditioner<spacedim>::type>();
@@ -748,9 +738,14 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
 
     const QGauss<dim> quad(parameters.coupling_quadrature_order);
     NonMatching::create_coupling_mass_matrix(
-        *space_grid_tools_cache, *space_dh, *embedded_dh, quad, coupling_matrix,
-        AffineConstraints<double>(), ComponentMask({true, true, false}),
-        ComponentMask(), *embedded_mapping);
+        *velocity_dh, *embedded_dh, quad, coupling_matrix, constraints,
+        ComponentMask(), ComponentMask(), MappingQ1<spacedim>(),
+        *embedded_mapping);
+
+    VectorTools::create_right_hand_side(
+        *embedded_mapping, *embedded_dh,
+        QGauss<dim>(2 * embedded_fe->degree + 2), embedded_value_function,
+        embedded_rhs);
 
     VectorTools::interpolate(*embedded_mapping, *embedded_dh,
                              embedded_value_function, embedded_value);
@@ -769,17 +764,13 @@ template <int dim, int spacedim>
 void IBStokesProblem<dim, spacedim>::solve() {
   TimerOutput::Scope timer_section(monitor, "Solve system");
 
-  // Old way
-  if (std::strcmp(parameters.solver.c_str(), "CG") == 0) {
-    const InverseMatrix<SparseMatrix<double>,
-                        typename InnerPreconditioner<spacedim>::type>
-        A_inverse(stokes_matrix.block(0, 0), *A_preconditioner);
-    Vector<double> tmp(solution.block(0).size());
-
+  // Stokes Only
+  if (std::strcmp(parameters.solver.c_str(), "Stokes") == 0) {
     {
       const InverseMatrix<SparseMatrix<double>,
                           typename InnerPreconditioner<spacedim>::type>
           A_inverse(stokes_matrix.block(0, 0), *A_preconditioner);
+
       Vector<double> tmp(solution.block(0).size());
 
       {
@@ -821,6 +812,47 @@ void IBStokesProblem<dim, spacedim>::solve() {
         constraints.distribute(solution);
       }
     }
+  } else if (std::strcmp(parameters.solver.c_str(), "StokesIB") == 0) {
+    // Extract blocks from Stokes
+    auto A = linear_operator(stokes_matrix.block(0, 0));
+    auto Bt = linear_operator(stokes_matrix.block(0, 1));
+    auto B = linear_operator(stokes_matrix.block(1, 0));
+    auto Ct = linear_operator(coupling_matrix);
+    auto C = transpose_operator(Ct);
+
+    SparseDirectUMFPACK A_inv_umfpack;
+    A_inv_umfpack.initialize(stokes_matrix.block(0, 0));
+    auto A_inv = linear_operator(stokes_matrix.block(0, 0), A_inv_umfpack);
+
+    // Define inverse operators
+
+    SolverControl solver_control(100 * solution.block(1).size(), 1e-10, false,
+                                 false);
+    SolverCG<Vector<double>> cg_solver(solver_control);
+    auto SBB = B * A_inv * Bt;
+    auto SBC = B * A_inv * Ct;
+    auto SCB = C * A_inv * Bt;
+    auto SCC = C * A_inv * Ct;
+
+    auto SBB_inv = inverse_operator(SBB, cg_solver, PreconditionIdentity());
+    auto S_lambda = SCC - SCB * SBB_inv * SBC;
+    auto S_lambda_inv =
+        inverse_operator(S_lambda, cg_solver, PreconditionIdentity());
+
+    auto A_inv_f = A_inv * stokes_rhs.block(0);
+    lambda = S_lambda_inv *
+             (C * A_inv_f - embedded_rhs - SCB * SBB_inv * B * A_inv_f);
+    std::cout << "Computed multiplier" << std::endl;
+
+    auto &p = solution.block(1);
+    p = SBB_inv * (B * A_inv_f - SBC * lambda);
+    constraints.distribute(solution);
+    std::cout << "Computed pressure" << std::endl;
+    auto &u = solution.block(0);
+    u = A_inv * (stokes_rhs.block(0) - Bt * solution.block(1) - Ct * lambda);
+    constraints.distribute(solution);
+    std::cout << "Computed velocity" << std::endl;
+
   } else {
     AssertThrow(false, ExcNotImplemented());
   }
@@ -835,96 +867,72 @@ template <int dim, int spacedim>
 void IBStokesProblem<dim, spacedim>::output_results() {
   TimerOutput::Scope timer_section(monitor, "Output results");
 
-  //   DataOut<spacedim> embedding_out;
+  {
+    DataOut<dim, spacedim> embedded_out;
 
-  //   std::ofstream embedding_out_file("embedding.vtu");
+    std::ofstream embedded_out_file("embedded.vtu");
 
-  //   embedding_out.attach_dof_handler(*space_dh);
-  //   embedding_out.add_data_vector(solution, "solution");
-  //   embedding_out.build_patches(parameters.embedding_space_finite_element_degree);
-  //   embedding_out.write_vtu(embedding_out_file);
+    std::vector<std::string> solution_names(spacedim, "g");
+    std::vector<DataComponentInterpretation::DataComponentInterpretation>
+        data_component_interpretation(
+            spacedim, DataComponentInterpretation::component_is_part_of_vector);
 
-  //   DataOut<dim, spacedim> embedded_out;
+    embedded_out.attach_dof_handler(*embedded_dh);
+    const auto dg_or_not = parameters.embedded_space_finite_element_degree == 0
+                               ? DataOut<dim, spacedim>::type_cell_data
+                               : DataOut<dim, spacedim>::type_automatic;
+    // embedded_out.add_data_vector(lambda, "lambda", dg_or_not);
+    embedded_out.add_data_vector(embedded_value, solution_names, dg_or_not,
+                                 data_component_interpretation);
+    embedded_out.build_patches(*embedded_mapping, 1.);
+    embedded_out.write_vtu(embedded_out_file);
+  }
 
-  //   // std::ofstream embedded_out_file("embedded.vtu");
-  //   std::ofstream embedded_out_file("grid-int.gnuplot");
+  {
+    std::vector<std::string> solution_names(spacedim, "velocity");
+    solution_names.emplace_back("pressure");
 
-  //   embedded_out.attach_dof_handler(*embedded_dh);
-  //   const auto dg_or_not = parameters.embedded_space_finite_element_degree ==
-  //   0
-  //                              ? DataOut<dim, spacedim>::type_cell_data
-  //                              : DataOut<dim, spacedim>::type_automatic;
-  //   embedded_out.add_data_vector(lambda, "lambda", dg_or_not);
-  //   embedded_out.add_data_vector(embedded_value, "g", dg_or_not);
-  //   embedded_out.build_patches(*embedded_mapping, 1.);
-  //   // embedded_out.write_vtu(embedded_out_file);
-  //   embedded_out.write_gnuplot(embedded_out_file);
+    std::vector<DataComponentInterpretation::DataComponentInterpretation>
+        data_component_interpretation(
+            spacedim, DataComponentInterpretation::component_is_part_of_vector);
+    data_component_interpretation.push_back(
+        DataComponentInterpretation::component_is_scalar);
 
-  //   // Vector visualization
-  //   std::vector<std::string> solution_names(spacedim);
-  //   for (unsigned int i = 0; i < spacedim; ++i) {
-  //     solution_names[i] =
-  //         "vec_sol_" + std::string(1, 'x' + i);  // "vec_sol_x", "vec_sol_y",
-  //         ...
-  //   }
-  //   std::vector<DataComponentInterpretation::DataComponentInterpretation>
-  //       data_component_interpretation(
-  //           spacedim,
-  //           DataComponentInterpretation::component_is_part_of_vector);
+    DataOut<spacedim> data_out_stokes;
+    data_out_stokes.attach_dof_handler(*space_dh);
+    data_out_stokes.add_data_vector(solution, solution_names,
+                                    DataOut<spacedim>::type_dof_data,
+                                    data_component_interpretation);
+    data_out_stokes.build_patches();
 
-  //   DataOut<spacedim> vecsol_out;
-  //   vecsol_out.attach_dof_handler(*space_dh);
-  //   vecsol_out.add_data_vector(solution, solution_names,
-  //                              DataOut<spacedim>::type_dof_data,
-  //                              data_component_interpretation);
-  //   vecsol_out.build_patches(parameters.embedding_space_finite_element_degree);
-  //   std::ofstream output("vector_value_solution.vtk");
-  //   vecsol_out.write_vtk(output);
+    std::ofstream output("solution-stokes.vtk");
+    data_out_stokes.write_vtk(output);
+  }
 
-  std::vector<std::string> solution_names(spacedim, "velocity");
-  solution_names.emplace_back("pressure");
+  // Estimate condition number:
+  std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" << std::endl;
+  std::cout << "Estimate condition number of CCt using CG" << std::endl;
+  SolverControl solver_control(lambda.size(), 1e-12);
+  SolverCG<Vector<double>> solver_cg(solver_control);
 
-  std::vector<DataComponentInterpretation::DataComponentInterpretation>
-      data_component_interpretation(
-          spacedim, DataComponentInterpretation::component_is_part_of_vector);
-  data_component_interpretation.push_back(
-      DataComponentInterpretation::component_is_scalar);
+  solver_cg.connect_condition_number_slot(
+      std::bind(output_double_number, std::placeholders::_1,
+                "Condition number estimate: "));
+  auto Ct = linear_operator(coupling_matrix);
+  auto C = transpose_operator(Ct);
+  auto CCt = C * Ct;
 
-  DataOut<spacedim> data_out;
-  data_out.attach_dof_handler(*space_dh);
-  data_out.add_data_vector(solution, solution_names,
-                           DataOut<spacedim>::type_dof_data,
-                           data_component_interpretation);
-  data_out.build_patches();
-
-  std::ofstream output("solution-stokes.vtk");
-  data_out.write_vtk(output);
-
-  // Estimate condition number: TODO
-  //   std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" <<
-  //   std::endl; std::cout << "Estimate condition number of CCt using CG" <<
-  //   std::endl; SolverControl solver_control(lambda.size(), 1e-12);
-  //   SolverCG<Vector<double>> solver_cg(solver_control);
-
-  //   solver_cg.connect_condition_number_slot(
-  //       std::bind(output_double_number, std::placeholders::_1,
-  //                 "Condition number estimate: "));
-  //   auto Ct = linear_operator(coupling_matrix);
-  //   auto C = transpose_operator(Ct);
-  //   auto CCt = C * Ct;
-
-  //   Vector<double> u(lambda);
-  //   u = 0.;
-  //   Vector<double> f(lambda);
-  //   f = 1.;
-  //   PreconditionIdentity prec_no;
-  //   try {
-  //     solver_cg.solve(CCt, u, f, prec_no);
-  //   } catch (...) {
-  //     std::cerr << "***CCt solve not successfull (see condition number
-  //     above)***"
-  //               << std::endl;
-  //   }
+  Vector<double> u(lambda);
+  u = 0.;
+  Vector<double> f(lambda);
+  f = 1.;
+  PreconditionIdentity prec_no;
+  try {
+    solver_cg.solve(CCt, u, f, prec_no);
+  } catch (...) {
+    std::cerr << "***CCt solve not successfull (see condition number above)***"
+              << std::endl;
+  }
 }
 
 template <int dim, int spacedim>
@@ -936,10 +944,7 @@ void IBStokesProblem<dim, spacedim>::export_results_to_csv_file() {
   std::filesystem::path p(parameters_filename);
   myfile.open(p.stem().string() + ".csv",
               std::ios::app);  // get the filename and add proper extension
-  // myfile << "DoF (background + immersed)"
-  //        << ","
-  //        << "Iteration counts"
-  //        << "\n";
+
   myfile << results_data.dofs_background << "," << results_data.dofs_immersed
          << "," << results_data.outer_iterations << "\n";
 
