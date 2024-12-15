@@ -62,34 +62,7 @@
 #include <Epetra_RowMatrixTransposer.h>
 #endif
 
-template <int spacedim>
-class RightHandSide : public TensorFunction<1, spacedim> {
- public:
-  RightHandSide() : TensorFunction<1, spacedim>() {}
-
-  virtual Tensor<1, spacedim> value(const Point<spacedim> &p) const override;
-
-  virtual void value_list(
-      const std::vector<Point<spacedim>> &p,
-      std::vector<Tensor<1, spacedim>> &value) const override;
-};
-
-template <int spacedim>
-Tensor<1, spacedim> RightHandSide<spacedim>::value(
-    const Point<spacedim> &p) const {
-  return Tensor<1, spacedim>({0., 0.});
-}
-
-template <int spacedim>
-void RightHandSide<spacedim>::value_list(
-    const std::vector<Point<spacedim>> &vp,
-    std::vector<Tensor<1, spacedim>> &values) const {
-  for (unsigned int c = 0; c < vp.size(); ++c) {
-    values[c] = RightHandSide<spacedim>::value(vp[c]);
-  }
-}
-
-namespace Stokes {
+namespace IBStokes {
 
 using namespace dealii;
 
@@ -262,6 +235,9 @@ class IBStokesProblem {
   ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>>
       dirichlet_bc_function;
 
+  ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>>
+      body_force_function;
+
   ParameterAcceptorProxy<ReductionControl> schur_solver_control;
 
   SparsityPattern coupling_sparsity;
@@ -339,6 +315,7 @@ IBStokesProblem<dim, spacedim>::IBStokesProblem(const Parameters &parameters)
 
       embedded_value_function("Embedded value", spacedim),
       dirichlet_bc_function("Dirichlet boundary condition", spacedim + 1),
+      body_force_function("Body force", spacedim),
       schur_solver_control("Schur solver control"),
       monitor(std::cout, TimerOutput::summary,
               TimerOutput::cpu_and_wall_times) {
@@ -356,6 +333,10 @@ IBStokesProblem<dim, spacedim>::IBStokesProblem(const Parameters &parameters)
 
   dirichlet_bc_function.declare_parameters_call_back.connect([]() -> void {
     ParameterAcceptor::prm.set("Function expression", "0;0;0");
+  });
+
+  body_force_function.declare_parameters_call_back.connect([]() -> void {
+    ParameterAcceptor::prm.set("Function expression", "0;0");
   });
 
   schur_solver_control.declare_parameters_call_back.connect([]() -> void {
@@ -496,8 +477,8 @@ void IBStokesProblem<dim, spacedim>::setup_background_dofs() {
       DoFTools::count_dofs_per_fe_block(*space_dh, block_component);
   const types::global_dof_index n_u = dofs_per_block[0];
   const types::global_dof_index n_p = dofs_per_block[1];
-  std::cout << "Number of degrees of freedom: " << space_dh->n_dofs() << " ("
-            << n_u << '+' << n_p << ')' << std::endl;
+  deallog << "Number of degrees of freedom: " << space_dh->n_dofs() << " ("
+          << n_u << '+' << n_p << ')' << std::endl;
 
   // Define blocksparsityPattern
 
@@ -615,9 +596,8 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
   const FEValuesExtractors::Vector velocities(0);
   const FEValuesExtractors::Scalar pressure(spacedim);
 
-  const RightHandSide<spacedim> right_hand_side;
-  std::vector<Tensor<1, spacedim>> rhs_values(n_q_points,
-                                              Tensor<1, spacedim>());
+  std::vector<Vector<double>> body_force_values(n_q_points,
+                                                Vector<double>(spacedim));
 
   // Precompute stuff for Stokes' weak form
   std::vector<SymmetricTensor<2, spacedim>> symgrad_phi_u(dofs_per_cell);
@@ -631,9 +611,13 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
     local_rhs = 0;
     local_preconditioner_matrix = 0;
 
-    right_hand_side.value_list(fe_values.get_quadrature_points(), rhs_values);
+    body_force_function.vector_value_list(fe_values.get_quadrature_points(),
+                                          body_force_values);
 
     for (unsigned int q = 0; q < n_q_points; ++q) {
+      Tensor<1, spacedim> body_force_values_tensor{
+          ArrayView{body_force_values[q].begin(), body_force_values[q].size()}};
+
       for (unsigned int k = 0; k < dofs_per_cell; ++k) {
         symgrad_phi_u[k] = fe_values[velocities].symmetric_gradient(k, q);
         div_phi_u[k] = fe_values[velocities].divergence(k, q);
@@ -650,10 +634,11 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
               * fe_values.JxW(q);
 
           local_preconditioner_matrix(i, j) +=
-              (phi_p[i] * phi_p[j]) * fe_values.JxW(q);
+              (phi_p[i] * phi_p[j]) * fe_values.JxW(q);  // p_i p_j
         }
 
-        local_rhs(i) += phi_u[i] * rhs_values[q] * fe_values.JxW(q);
+        // local_rhs(i) += phi_u[i] * rhs_values[q] * fe_values.JxW(q);
+        local_rhs(i) += phi_u[i] * body_force_values_tensor * fe_values.JxW(q);
       }
     }
 
@@ -674,7 +659,7 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
         local_preconditioner_matrix, local_dof_indices, preconditioner_matrix);
   }
 
-  std::cout << "Computing preconditioner ..." << std::endl;
+  deallog << "Computing preconditioner ..." << std::endl;
   A_preconditioner =
       std::make_shared<typename InnerPreconditioner<spacedim>::type>();
   A_preconditioner->initialize(
@@ -698,10 +683,10 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
     VectorTools::interpolate(*embedded_mapping, *embedded_dh,
                              embedded_value_function, embedded_value);
   }
-  std::cout << "N_rows A: " << stokes_matrix.block(0, 0).m() << std::endl;
-  std::cout << "N_rows B: " << stokes_matrix.block(1, 0).m() << std::endl;
-  std::cout << "N_rows C: " << coupling_matrix.n() << std::endl;
-  std::cout << "N_cols C: " << coupling_matrix.m() << std::endl;
+  deallog << "N_rows A: " << stokes_matrix.block(0, 0).m() << std::endl;
+  deallog << "N_rows B: " << stokes_matrix.block(1, 0).m() << std::endl;
+  deallog << "N_rows C: " << coupling_matrix.n() << std::endl;
+  deallog << "N_cols C: " << coupling_matrix.m() << std::endl;
 }
 
 void output_double_number(double input, const std::string &text) {
@@ -745,9 +730,9 @@ void IBStokesProblem<dim, spacedim>::solve() {
 
         constraints.distribute(solution);
 
-        std::cout << "  " << solver_control.last_step()
-                  << " outer CG Schur complement iterations for pressure"
-                  << std::endl;
+        deallog << "  " << solver_control.last_step()
+                << " outer CG Schur complement iterations for pressure"
+                << std::endl;
       }
 
       {
@@ -760,7 +745,7 @@ void IBStokesProblem<dim, spacedim>::solve() {
         constraints.distribute(solution);
       }
     }
-  } else if (std::strcmp(parameters.solver.c_str(), "StokesIB") == 0) {
+  } else if (std::strcmp(parameters.solver.c_str(), "IBStokes") == 0) {
     // Extract blocks from Stokes
     auto A = linear_operator(stokes_matrix.block(0, 0));
     auto Bt = linear_operator(stokes_matrix.block(0, 1));
@@ -790,16 +775,16 @@ void IBStokesProblem<dim, spacedim>::solve() {
     auto A_inv_f = A_inv * stokes_rhs.block(0);
     lambda = S_lambda_inv *
              (C * A_inv_f - embedded_rhs - SCB * SBB_inv * B * A_inv_f);
-    std::cout << "Computed multiplier" << std::endl;
+    deallog << "Computed multiplier" << std::endl;
 
     auto &p = solution.block(1);
     p = SBB_inv * (B * A_inv_f - SBC * lambda);
     constraints.distribute(solution);
-    std::cout << "Computed pressure" << std::endl;
+    deallog << "Computed pressure" << std::endl;
     auto &u = solution.block(0);
     u = A_inv * (stokes_rhs.block(0) - Bt * solution.block(1) - Ct * lambda);
     constraints.distribute(solution);
-    std::cout << "Computed velocity" << std::endl;
+    deallog << "Computed velocity" << std::endl;
 
   } else {
     AssertThrow(false, ExcNotImplemented());
@@ -858,8 +843,8 @@ void IBStokesProblem<dim, spacedim>::output_results() {
   }
 
   // Estimate condition number:
-  std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" << std::endl;
-  std::cout << "Estimate condition number of CCt using CG" << std::endl;
+  deallog << "- - - - - - - - - - - - - - - - - - - - - - - -" << std::endl;
+  deallog << "Estimate condition number of CCt using CG" << std::endl;
   SolverControl solver_control(lambda.size(), 1e-12);
   SolverCG<Vector<double>> solver_cg(solver_control);
 
@@ -911,13 +896,13 @@ void IBStokesProblem<dim, spacedim>::run() {
   output_results();
   // export_results_to_csv_file();
 }
-}  // namespace Stokes
+}  // namespace IBStokes
 
 int main(int argc, char **argv) {
   try {
     Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
     using namespace dealii;
-    using namespace Stokes;
+    using namespace IBStokes;
 
     const unsigned int dim = 1, spacedim = 2;
 
