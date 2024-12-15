@@ -77,7 +77,7 @@ class RightHandSide : public TensorFunction<1, spacedim> {
 template <int spacedim>
 Tensor<1, spacedim> RightHandSide<spacedim>::value(
     const Point<spacedim> &p) const {
-  return Tensor<1, spacedim>({1., 1.});
+  return Tensor<1, spacedim>({0., 0.});
 }
 
 template <int spacedim>
@@ -259,6 +259,9 @@ class IBStokesProblem {
   ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>>
       embedded_value_function;
 
+  ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>>
+      dirichlet_bc_function;
+
   ParameterAcceptorProxy<ReductionControl> schur_solver_control;
 
   SparsityPattern coupling_sparsity;
@@ -335,6 +338,7 @@ IBStokesProblem<dim, spacedim>::IBStokesProblem(const Parameters &parameters)
       embedded_configuration_function("Embedded configuration", spacedim),
 
       embedded_value_function("Embedded value", spacedim),
+      dirichlet_bc_function("Dirichlet boundary condition", spacedim + 1),
       schur_solver_control("Schur solver control"),
       monitor(std::cout, TimerOutput::summary,
               TimerOutput::cpu_and_wall_times) {
@@ -348,6 +352,10 @@ IBStokesProblem<dim, spacedim>::IBStokesProblem(const Parameters &parameters)
 
   embedded_value_function.declare_parameters_call_back.connect([]() -> void {
     ParameterAcceptor::prm.set("Function expression", "1; 1");
+  });
+
+  dirichlet_bc_function.declare_parameters_call_back.connect([]() -> void {
+    ParameterAcceptor::prm.set("Function expression", "0;0;0");
   });
 
   schur_solver_control.declare_parameters_call_back.connect([]() -> void {
@@ -479,8 +487,7 @@ void IBStokesProblem<dim, spacedim>::setup_background_dofs() {
     DoFTools::make_hanging_node_constraints(*space_dh, constraints);
     for (const unsigned int id : parameters.dirichlet_ids)
       VectorTools::interpolate_boundary_values(
-          *space_dh, id,
-          Functions::ConstantFunction<spacedim>(0., spacedim + 1), constraints,
+          *space_dh, id, dirichlet_bc_function, constraints,
           space_fe->component_mask(velocities));
   }
   constraints.close();
