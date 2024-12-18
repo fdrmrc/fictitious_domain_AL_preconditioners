@@ -6,8 +6,8 @@ set Dirichlet boundary ids                       = 0,1,2,3
 set Embedded configuration finite element degree = 1
 set Embedded space finite element degree         = 1
 set Background space finite element degree       = 1
-set Initial embedded space refinement            = 7
-set Initial background space refinement          = 6
+set Initial embedded space refinement            = 8
+set Initial background space refinement          = 7
 set Local refinements steps near embedded domain = 1
 set Solver                                       = IBStokesAL
 set Use displacement in embedded interface       = false
@@ -106,7 +106,7 @@ set Variable names      = x,y,t
    # `pi=3.1415926536' and then use `pi' in the expression of the actual
    # formula. (That said, for convenience this class actually defines both
    # `pi' and `Pi' by default, but you get the idea.)
-set Function constants  = R=.21, Cx=0.5,Cy=0.5                  # default: 
+set Function constants  = R=.21, Cx=0.6,Cy=0.5                  # default: 
 
    # The formula that denotes the function you want to evaluate for
    # particular values of the independent variables. This expression may
@@ -183,7 +183,7 @@ set Log frequency = 1
 set Log history   = true
 set Log result    = true
 set Max steps     = 1000   # default: 100
-set Reduction     = 1.e-10 # default: 1.e-2
+set Reduction     = 1.e-20 # default: 1.e-2
 set Tolerance     = 1.e-10 # default: 1.e-10
   end
 

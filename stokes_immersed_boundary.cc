@@ -838,17 +838,26 @@ namespace IBStokes
       auto B = linear_operator(stokes_matrix.block(1, 0));
       auto Ct = linear_operator(coupling_matrix);
       auto C = transpose_operator(Ct);
+      auto Mp = linear_operator(preconditioner_matrix.block(1, 1));
+
+      SparseDirectUMFPACK A_inv_umfpack;
+      A_inv_umfpack.initialize(stokes_matrix.block(0, 0));
+      auto A_inv = linear_operator(stokes_matrix.block(0, 0), A_inv_umfpack);
+
+      SparseDirectUMFPACK Mp_inv_umfpack;
+      Mp_inv_umfpack.initialize(preconditioner_matrix.block(1, 1));
+      auto Mp_inv = linear_operator(preconditioner_matrix.block(1, 1), Mp_inv_umfpack);
 
       auto M = linear_operator(mass_matrix_immersed);
       const auto Zero = M * 0.0;
       SparseDirectUMFPACK M_inv_umfpack;
       M_inv_umfpack.initialize(mass_matrix_immersed);
 
-      const double gamma = 10;
+      const double gamma = 10.;
 
       auto invW1 = linear_operator(mass_matrix_immersed, M_inv_umfpack);
-      auto invW = invW1 * invW1;
-      auto Aug = A + gamma * Ct * invW * C;
+      auto invW = invW1 * invW1 * invW1;
+      auto Aug = A + gamma * Ct * invW * C + gamma * Bt * Mp_inv * B;
 
       deallog << "gamma: " << gamma << std::endl;
 
@@ -861,7 +870,7 @@ namespace IBStokes
       AA.reinit_range_vector(system_rhs_block, false);
 
       solution_block.block(0) = solution.block(0); // velocity
-      solution_block.block(1) = solution.block(1);
+      solution_block.block(1) = solution.block(1); // pressure
       solution_block.block(2) = lambda;
 
       // lagrangian term
@@ -873,7 +882,7 @@ namespace IBStokes
       system_rhs_block.block(1) = stokes_rhs.block(1);
       system_rhs_block.block(2) = embedded_rhs;
 
-      SolverControl control_lagrangian(1000, 1e-10, false, false);
+      SolverControl control_lagrangian(100000, 1e-10, false, false);
       SolverCG<Vector<double>> solver_lagrangian(control_lagrangian);
 
       auto Aug_inv = inverse_operator(Aug, solver_lagrangian,
@@ -887,10 +896,12 @@ namespace IBStokes
       SolverFGMRES<BlockVector<double>> solver_fgmres(schur_solver_control);
 
       BlockPreconditionerAugmentedLagrangianStokes augmented_lagrangian_preconditioner_Stokes{
-          Aug_inv, B, Bt, C, Ct, invW, gamma};
+          Aug_inv, B, Bt, C, Ct, invW, Mp_inv, gamma};
       solver_fgmres.solve(AA, solution_block, system_rhs_block,
                           augmented_lagrangian_preconditioner_Stokes);
 
+      solution.block(0) = solution_block.block(0);
+      solution.block(1) = solution_block.block(1);
       constraints.distribute(solution);
     }
     else
