@@ -176,12 +176,12 @@ void build_AMG_augmented_block(
   dealii::deallog << "Initialized AMG preconditioner for augmented block"
                   << std::endl;
 
-// Print matrices to file to check if one is the transpose of the other
-#ifdef DEBUG
-  coupling_matrix.print_formatted(std::cout);
-  coupling_t.print_formatted(std::cout);
-  inverse_squares.print(std::cout);
-#endif
+  // Print matrices to file to check if one is the transpose of the other
+  // #ifdef DEBUG
+  //   coupling_matrix.print_formatted(std::cout);
+  //   coupling_t.print_formatted(std::cout);
+  //   inverse_squares.print(std::cout);
+  // #endif
 }
 
 #endif

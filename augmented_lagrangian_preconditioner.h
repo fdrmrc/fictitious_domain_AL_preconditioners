@@ -45,9 +45,7 @@ class BlockPreconditionerAugmentedLagrangianStokes {
  public:
   BlockPreconditionerAugmentedLagrangianStokes(
       const LinearOperator<Vector<double>> Aug_inv_,
-      const LinearOperator<Vector<double>> B_,
       const LinearOperator<Vector<double>> Bt_,
-      const LinearOperator<Vector<double>> C_,
       const LinearOperator<Vector<double>> Ct_,
       const LinearOperator<Vector<double>> invW_,
       const LinearOperator<Vector<double>> Mp_inv_, const double gamma_) {

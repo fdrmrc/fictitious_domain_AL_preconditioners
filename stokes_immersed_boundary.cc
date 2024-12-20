@@ -944,7 +944,7 @@ void IBStokesProblem<dim, spacedim>::solve() {
     SolverFGMRES<BlockVector<double>> solver_fgmres(outer_solver_control);
 
     BlockPreconditionerAugmentedLagrangianStokes
-        augmented_lagrangian_preconditioner_Stokes{Aug_inv, B,      Bt,   C, Ct,
+        augmented_lagrangian_preconditioner_Stokes{Aug_inv, Bt,     Ct,
                                                    invW,    Mp_inv, gamma};
     solver_fgmres.solve(AA, solution_block, system_rhs_block,
                         augmented_lagrangian_preconditioner_Stokes);
