@@ -861,29 +861,24 @@ void IBStokesProblem<dim, spacedim>::solve() {
     auto B = linear_operator(stokes_matrix.block(1, 0));
     auto Ct = linear_operator(coupling_matrix);
     auto C = transpose_operator(Ct);
+    auto M = linear_operator(mass_matrix_immersed);
     auto Mp = linear_operator(preconditioner_matrix.block(1, 1));
-
-    SparseDirectUMFPACK A_inv_umfpack;
-    A_inv_umfpack.initialize(stokes_matrix.block(0, 0));
-    auto A_inv = linear_operator(stokes_matrix.block(0, 0), A_inv_umfpack);
 
     SparseDirectUMFPACK Mp_inv_umfpack;
     Mp_inv_umfpack.initialize(preconditioner_matrix.block(1, 1));
     auto Mp_inv =
         linear_operator(preconditioner_matrix.block(1, 1), Mp_inv_umfpack);
 
-    auto M = linear_operator(mass_matrix_immersed);
     const auto Zero = M * 0.0;
-    SparseDirectUMFPACK M_inv_umfpack;
-    M_inv_umfpack.initialize(mass_matrix_immersed);
+    SparseDirectUMFPACK M_immersed_inv_umfpack;
+    M_immersed_inv_umfpack.initialize(mass_matrix_immersed);
+
+    auto invW1 = linear_operator(mass_matrix_immersed, M_immersed_inv_umfpack);
+    auto invW = invW1 * invW1;
 
     const double gamma = augmented_lagrangian_control.gamma;
     deallog << "gamma: " << gamma << std::endl;
-
-    auto invW1 = linear_operator(mass_matrix_immersed, M_inv_umfpack);
-    auto invW = invW1 * invW1;
-
-    auto Aug = A;
+    auto Aug = null_operator(A);
     if (augmented_lagrangian_control.grad_div_stabilization)
       Aug = A + gamma * Ct * invW * C;
     else
@@ -918,13 +913,14 @@ void IBStokesProblem<dim, spacedim>::solve() {
         augmented_lagrangian_control.log_result);
     SolverCG<Vector<double>> solver_lagrangian(control_lagrangian);
 
-    auto Aug_inv = A;
+    auto Aug_inv = null_operator(A);
     TrilinosWrappers::PreconditionAMG
         prec_amg_aug;  // will be initialized only if selected
     if (augmented_lagrangian_control.AMG_preconditioner_augmented == true &&
         augmented_lagrangian_control.grad_div_stabilization == true) {
       Vector<double> inverse_squares_multiplier(
           mass_matrix_immersed.m());  // M^{-2}
+
       for (types::global_dof_index i = 0; i < mass_matrix_immersed.m(); ++i)
         inverse_squares_multiplier(i) =
             1. / (mass_matrix_immersed.diag_element(i) *
