@@ -285,6 +285,9 @@ class IBStokesProblem {
   SparseMatrix<double> embedded_stiffness_matrix;
   SparseMatrix<double> coupling_matrix;
 
+  std::vector<typename Triangulation<spacedim>::active_cell_iterator>
+      intersected_background_cells;
+
   BlockSparsityPattern sparsity_pattern_stokes;
   BlockSparseMatrix<double> stokes_matrix;
 
@@ -458,6 +461,12 @@ void IBStokesProblem<dim, spacedim>::setup_grids_and_dofs() {
     }
     space_grid->execute_coarsening_and_refinement();
   }
+
+  const auto cpl = GridTools::compute_point_locations(*space_grid_tools_cache,
+                                                      support_points);
+  intersected_background_cells = std::get<0>(cpl);
+  deallog << "The curve intersected " << intersected_background_cells.size()
+          << " background cells." << std::endl;
 
   const double embedded_space_maximal_diameter =
       GridTools::maximal_cell_diameter(*embedded_grid, *embedded_mapping);
@@ -695,6 +704,12 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
               (phi_p[i] * phi_p[j]) * fe_values.JxW(q);  // p_i p_j
         }
 
+        if (std::find(intersected_background_cells.begin(),
+                      intersected_background_cells.end(),
+                      cell) != intersected_background_cells.end()) {
+          // add contribution if intersected cell
+          local_matrix(i, i) += phi_u[i] * phi_u[i] * fe_values.JxW(q);
+        }
         // local_rhs(i) += phi_u[i] * rhs_values[q] * fe_values.JxW(q);
         local_rhs(i) += phi_u[i] * body_force_values_tensor * fe_values.JxW(q);
       }
@@ -880,7 +895,7 @@ void IBStokesProblem<dim, spacedim>::solve() {
     deallog << "gamma: " << gamma << std::endl;
     auto Aug = null_operator(A);
     if (augmented_lagrangian_control.grad_div_stabilization)
-      Aug = A + gamma * Ct * invW * C;
+      Aug = A;  //+ gamma * Ct * invW * C;
     else
       Aug = A + gamma * Ct * invW * C + gamma * Bt * Mp_inv * B;
 
@@ -926,10 +941,11 @@ void IBStokesProblem<dim, spacedim>::solve() {
             1. / (mass_matrix_immersed.diag_element(i) *
                   mass_matrix_immersed.diag_element(i));
 
-      build_AMG_augmented_block(*velocity_dh, coupling_matrix,
-                                stokes_matrix.block(0, 0), coupling_sparsity,
-                                inverse_squares_multiplier, constraints, gamma,
-                                prec_amg_aug);
+      // build_AMG_augmented_block(*velocity_dh, coupling_matrix,
+      //                           stokes_matrix.block(0, 0), coupling_sparsity,
+      //                           inverse_squares_multiplier, constraints,
+      //                           gamma, prec_amg_aug);
+      prec_amg_aug.initialize(stokes_matrix.block(0, 0));
       Aug_inv = inverse_operator(Aug, solver_lagrangian, prec_amg_aug);
     } else if (augmented_lagrangian_control.AMG_preconditioner_augmented ==
                    false &&
@@ -946,8 +962,17 @@ void IBStokesProblem<dim, spacedim>::solve() {
     BlockPreconditionerAugmentedLagrangianStokes
         augmented_lagrangian_preconditioner_Stokes{Aug_inv, Bt,     Ct,
                                                    invW,    Mp_inv, gamma};
-    solver_fgmres.solve(AA, solution_block, system_rhs_block,
-                        augmented_lagrangian_preconditioner_Stokes);
+
+    Vector<double> v(solution.block(0).size());
+    Vector<double> test(solution.block(0).size());
+    v = 1.;
+    test = Ct * C * v;
+    std::cout << "Printing" << std::endl;
+    for (auto &x : test) std::cout << x << std::endl;
+    return
+
+        solver_fgmres.solve(AA, solution_block, system_rhs_block,
+                            augmented_lagrangian_preconditioner_Stokes);
 
     solution.block(0) = solution_block.block(0);
     solution.block(1) = solution_block.block(1);
