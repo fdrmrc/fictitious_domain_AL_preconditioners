@@ -48,13 +48,15 @@ class BlockPreconditionerAugmentedLagrangianStokes {
       const LinearOperator<Vector<double>> Bt_,
       const LinearOperator<Vector<double>> Ct_,
       const LinearOperator<Vector<double>> invW_,
-      const LinearOperator<Vector<double>> Mp_inv_, const double gamma_) {
+      const LinearOperator<Vector<double>> Mp_inv_, const double gamma_,
+      const double gamma_grad_div_) {
     Aug_inv = Aug_inv_;
     Bt = Bt_;
     Ct = Ct_;
     invW = invW_;
     Mp_inv = Mp_inv_;
     gamma = gamma_;
+    gamma_grad_div = gamma_grad_div_;
   }
 
   void vmult(BlockVector<double> &v, const BlockVector<double> &u) const {
@@ -63,7 +65,7 @@ class BlockPreconditionerAugmentedLagrangianStokes {
     v.block(2) = 0.;
 
     v.block(2) = -gamma * invW * u.block(2);
-    v.block(1) = -gamma * Mp_inv * u.block(1);
+    v.block(1) = -gamma_grad_div * Mp_inv * u.block(1);
     v.block(0) = Aug_inv * (u.block(0) - Bt * v.block(1) - Ct * v.block(2));
   }
 
@@ -73,6 +75,7 @@ class BlockPreconditionerAugmentedLagrangianStokes {
   LinearOperator<Vector<double>> Mp_inv;
   LinearOperator<Vector<double>> Ct;
   double gamma;
+  double gamma_grad_div;
 };
 
 #endif

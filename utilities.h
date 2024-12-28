@@ -14,6 +14,8 @@
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 #endif
 
+#include <deal.II/non_matching/coupling.h>
+
 #include <exception>
 #include <limits>
 
@@ -46,6 +48,7 @@ double compute_l2_norm_matrix(const SparseMatrix<double>& C,
 
 template <int dim, int spacedim>
 void build_AMG_augmented_block(
+    const DoFHandler<dim, spacedim>& velocity_dh,
     const DoFHandler<dim, spacedim>& space_dh,
     const SparseMatrix<double>& coupling_matrix,
     const SparseMatrix<double>& stiffness_matrix,
@@ -115,16 +118,16 @@ void build_AMG_augmented_block(
 #endif
 
   // Now, perform matmat multiplication
-  const auto& space_fe = space_dh.get_fe();
+  const auto& space_fe = velocity_dh.get_fe();
   SparseMatrix<double> augmented_block, BtWinvB;
-  DynamicSparsityPattern dsp_aux(space_dh.n_dofs(), space_dh.n_dofs());
+  DynamicSparsityPattern dsp_aux(velocity_dh.n_dofs(), velocity_dh.n_dofs());
   const unsigned int dofs_per_cell = space_fe.n_dofs_per_cell();
   std::vector<types::global_dof_index> current_dof_indices(dofs_per_cell);
   dsp_aux.compute_mmult_pattern(coupling_sparsity,
                                 coupling_sparsity_transposed);
 
   // Add sparsity from matrix2
-  for (unsigned int row = 0; row < space_dh.n_dofs(); ++row) {
+  for (unsigned int row = 0; row < velocity_dh.n_dofs(); ++row) {
     for (auto it = stiffness_matrix.begin(row); it != stiffness_matrix.end(row);
          ++it) {
       dsp_aux.add(row, it->column());
@@ -162,7 +165,7 @@ void build_AMG_augmented_block(
   SparseMatrix<double> stiffness_matrix_copy;
   stiffness_matrix_copy.reinit(sp_aux);
   MatrixTools::create_laplace_matrix(
-      space_dh, QGauss<spacedim>(2 * space_fe.degree + 1),
+      velocity_dh, QGauss<spacedim>(2 * space_fe.degree + 1),
       stiffness_matrix_copy, static_cast<const Function<spacedim>*>(nullptr),
       space_constraints);
 
@@ -171,7 +174,18 @@ void build_AMG_augmented_block(
   augmented_block.add(gamma, BtWinvB);
 
   //!
-  amg_prec.initialize(augmented_block);                           //!
+  const FEValuesExtractors::Vector velocity_components(0);
+  const std::vector<std::vector<bool>> constant_modes =
+      DoFTools::extract_constant_modes(
+          space_dh, space_dh.get_fe().component_mask(velocity_components));
+  TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
+  amg_data.constant_modes = constant_modes;
+  amg_data.elliptic = true;
+  amg_data.higher_order_elements = true;
+  amg_data.smoother_sweeps = 2;
+  amg_data.aggregation_threshold = 0.02;
+
+  amg_prec.initialize(augmented_block, amg_data);                 //!
   auto prec_for_cg = linear_operator(augmented_block, amg_prec);  //!
   dealii::deallog << "Initialized AMG preconditioner for augmented block"
                   << std::endl;
@@ -183,5 +197,6 @@ void build_AMG_augmented_block(
   //   inverse_squares.print(std::cout);
   // #endif
 }
+
 
 #endif

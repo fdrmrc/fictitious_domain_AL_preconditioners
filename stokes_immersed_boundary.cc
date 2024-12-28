@@ -17,6 +17,7 @@
 #include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_system.h>
+#include <deal.II/fe/fe_update_flags.h>
 #include <deal.II/fe/fe_values.h>
 #include <deal.II/fe/mapping_fe_field.h>
 #include <deal.II/fe/mapping_q_eulerian.h>
@@ -28,6 +29,7 @@
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/diagonal_matrix.h>
 #include <deal.II/lac/full_matrix.h>
+#include <deal.II/lac/identity_matrix.h>
 #include <deal.II/lac/linear_operator.h>
 #include <deal.II/lac/linear_operator_tools.h>
 #include <deal.II/lac/precondition.h>
@@ -153,8 +155,11 @@ struct ResultsData {
 // Struct to pipe parameters to the AL solver.
 struct ALControl {
   double gamma;  // gamma parameter for the augmented lagrangian formulation
-  bool grad_div_stabilization;        // true if you want to assemble grad-div
-                                      // stabilization
+  double gamma_grad_div;        // gamma parameter for grad-div stabilization
+  bool grad_div_stabilization;  // true if you want to assemble grad-div
+                                // stabilization
+  bool inverse_diag_square;     // true if you want to use the inverse diagonal
+                                // squared (immersed)
   bool AMG_preconditioner_augmented;  // true if you want to build AMG
                                       // preconditioner for augmented block
   double tol_AL;
@@ -163,7 +168,9 @@ struct ALControl {
 
   void declare_parameters(ParameterHandler &param) {
     param.declare_entry("Gamma", "10", Patterns::Double());
+    param.declare_entry("Gamma Grad-div", "10", Patterns::Double());
     param.declare_entry("Grad-div stabilization", "true", Patterns::Bool());
+    param.declare_entry("Diagonal mass immersed", "true", Patterns::Bool());
     param.declare_entry("AMG for augmented block", "true", Patterns::Bool());
     param.declare_entry("Tolerance for Augmented Lagrangian", "1e-4",
                         Patterns::Double());
@@ -172,7 +179,9 @@ struct ALControl {
   }
   void parse_parameters(ParameterHandler &param) {
     gamma = param.get_double("Gamma");
+    gamma_grad_div = param.get_double("Gamma Grad-div");
     grad_div_stabilization = param.get_bool("Grad-div stabilization");
+    inverse_diag_square = param.get_bool("Diagonal mass immersed");
     AMG_preconditioner_augmented = param.get_bool("AMG for augmented block");
     tol_AL = param.get_double("Tolerance for Augmented Lagrangian");
     log_result = param.get_bool("Log result");
@@ -203,8 +212,6 @@ class IBStokesProblem {
     unsigned int embedded_configuration_finite_element_degree = 1;
 
     unsigned int coupling_quadrature_order = 3;
-
-    bool use_displacement = false;
 
     unsigned int verbosity_level = 10;
 
@@ -277,11 +284,9 @@ class IBStokesProblem {
   SparsityPattern coupling_sparsity;
   SparsityPattern mass_sparsity;
 
-  SparseMatrix<double> stiffness_matrix;
-  SparseMatrix<double> stiffness_matrix_copy;
   SparseMatrix<double> mass_matrix;
-  SparseMatrix<double> Mass_matrix;
   SparseMatrix<double> mass_matrix_immersed;
+
   SparseMatrix<double> embedded_stiffness_matrix;
   SparseMatrix<double> coupling_matrix;
 
@@ -322,8 +327,6 @@ IBStokesProblem<dim, spacedim>::Parameters::Parameters()
                 delta_refinement);
 
   add_parameter("Dirichlet boundary ids", dirichlet_ids);
-
-  add_parameter("Use displacement in embedded interface", use_displacement);
 
   add_parameter("Velocity space finite element degree",
                 velocity_finite_element_degree);
@@ -384,6 +387,7 @@ IBStokesProblem<dim, spacedim>::IBStokesProblem(const Parameters &parameters)
       []() -> void {
         ParameterAcceptor::prm.set("Gamma", "10");
         ParameterAcceptor::prm.set("Grad-div stabilization", "true");
+        ParameterAcceptor::prm.set("Diagonal mass immersed", "true");
         ParameterAcceptor::prm.set("AMG for augmented block", "true");
         ParameterAcceptor::prm.set("Log result", "true");
         ParameterAcceptor::prm.set("Max steps", "100");
@@ -429,15 +433,9 @@ void IBStokesProblem<dim, spacedim>::setup_grids_and_dofs() {
                            embedded_configuration_function,
                            embedded_configuration);
 
-  if (parameters.use_displacement == true)
-    embedded_mapping =
-        std::make_unique<MappingQEulerian<dim, Vector<double>, spacedim>>(
-            parameters.embedded_configuration_finite_element_degree,
-            *embedded_configuration_dh, embedded_configuration);
-  else
-    embedded_mapping =
-        std::make_unique<MappingFEField<dim, spacedim, Vector<double>>>(
-            *embedded_configuration_dh, embedded_configuration);
+  embedded_mapping =
+      std::make_unique<MappingFEField<dim, spacedim, Vector<double>>>(
+          *embedded_configuration_dh, embedded_configuration);
 
   setup_embedded_dofs();
 
@@ -536,6 +534,15 @@ void IBStokesProblem<dim, spacedim>::setup_background_dofs() {
         else
           coupling_table[c][d] = DoFTools::none;
 
+    std::vector<types::global_dof_index> dofs_immersed(
+        embedded_dh->get_fe().n_dofs_per_cell());
+    for (const auto &immersed_cell : embedded_dh->active_cell_iterators()) {
+      immersed_cell->get_dof_indices(dofs_immersed);
+      for (const types::global_dof_index idx_row : dofs_immersed)
+        for (const types::global_dof_index idx_col : dofs_immersed)
+          dsp_stokes.block(0, 0).add(idx_row, idx_col);
+    }
+
     DoFTools::make_sparsity_pattern(*space_dh, coupling_table, dsp_stokes,
                                     constraints, false);
 
@@ -606,7 +613,8 @@ template <int dim, int spacedim>
 void IBStokesProblem<dim, spacedim>::setup_coupling() {
   TimerOutput::Scope timer_section(monitor, "Setup coupling");
 
-  const QGauss<dim> quad(parameters.coupling_quadrature_order);
+  // const QGauss<dim> quad(parameters.coupling_quadrature_order);
+  const QGauss<dim> quad(2 * embedded_fe->degree + 2);
 
   DynamicSparsityPattern dsp(velocity_dh->n_dofs(), embedded_dh->n_dofs());
 
@@ -648,6 +656,7 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
 
   // Precompute stuff for Stokes' weak form
   std::vector<SymmetricTensor<2, spacedim>> symgrad_phi_u(dofs_per_cell);
+  std::vector<Tensor<2, spacedim>> grad_phi_u(dofs_per_cell);
   std::vector<double> div_phi_u(dofs_per_cell);
   std::vector<Tensor<1, spacedim>> phi_u(dofs_per_cell);
   std::vector<double> phi_p(dofs_per_cell);
@@ -667,6 +676,7 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
 
       for (unsigned int k = 0; k < dofs_per_cell; ++k) {
         symgrad_phi_u[k] = fe_values[velocities].symmetric_gradient(k, q);
+        grad_phi_u[k] = fe_values[velocities].gradient(k, q);
         div_phi_u[k] = fe_values[velocities].divergence(k, q);
         phi_u[k] = fe_values[velocities].value(k, q);
         phi_p[k] = fe_values[pressure].value(k, q);
@@ -676,10 +686,11 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
         for (unsigned int j = 0; j <= i; ++j) {
           if (augmented_lagrangian_control.grad_div_stabilization == true) {
             local_matrix(i, j) +=
-                (2 * (symgrad_phi_u[i] * symgrad_phi_u[j])  // symgrad-symgrad
-                 - div_phi_u[i] * phi_p[j]                  // div u_i p_j
-                 - phi_p[i] * div_phi_u[j]                  // p_i div u_j
-                 + augmented_lagrangian_control.gamma * div_phi_u[i] *
+                (1. * scalar_product(grad_phi_u[i],
+                                     grad_phi_u[j])  // symgrad-symgrad
+                 - div_phi_u[i] * phi_p[j]           // div u_i p_j
+                 - phi_p[i] * div_phi_u[j]           // p_i div u_j
+                 + augmented_lagrangian_control.gamma_grad_div * div_phi_u[i] *
                        div_phi_u[j]) *  // grad-div stabilization
                 fe_values.JxW(q);
           } else {
@@ -729,7 +740,8 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
   {
     TimerOutput::Scope timer_section(monitor, "Assemble coupling system");
 
-    const QGauss<dim> quad(parameters.coupling_quadrature_order);
+    // const QGauss<dim> quad(parameters.coupling_quadrature_order);
+    const QGauss<dim> quad(2 * embedded_fe->degree + 2);
     NonMatching::create_coupling_mass_matrix(
         *velocity_dh, *embedded_dh, quad, coupling_matrix, constraints,
         ComponentMask(), ComponentMask(), MappingQ1<spacedim>(),
@@ -856,6 +868,7 @@ void IBStokesProblem<dim, spacedim>::solve() {
     // Immersed boundary, with Augmented Lagrangian preconditioner
 
     // As before, extract blocks from Stokes
+
     auto A = linear_operator(stokes_matrix.block(0, 0));
     auto Bt = linear_operator(stokes_matrix.block(0, 1));
     auto B = linear_operator(stokes_matrix.block(1, 0));
@@ -864,25 +877,49 @@ void IBStokesProblem<dim, spacedim>::solve() {
     auto M = linear_operator(mass_matrix_immersed);
     auto Mp = linear_operator(preconditioner_matrix.block(1, 1));
 
+    auto Mp_inv = null_operator(Mp);
+    DiagonalMatrix<Vector<double>> diag_inverse_pressure_matrix;
     SparseDirectUMFPACK Mp_inv_umfpack;
-    Mp_inv_umfpack.initialize(preconditioner_matrix.block(1, 1));
-    auto Mp_inv =
-        linear_operator(preconditioner_matrix.block(1, 1), Mp_inv_umfpack);
+    if (augmented_lagrangian_control.inverse_diag_square) {
+      const unsigned int n_cols_Mp = preconditioner_matrix.block(1, 1).m();
+      Vector<double> pressure_diagonal_inv(n_cols_Mp);
+      for (types::global_dof_index i = 0; i < n_cols_Mp; ++i)
+        pressure_diagonal_inv(i) =
+            1. / preconditioner_matrix.block(1, 1).diag_element(i);
+      diag_inverse_pressure_matrix.reinit(pressure_diagonal_inv);
+      Mp_inv = linear_operator(diag_inverse_pressure_matrix);
+    } else {
+      Mp_inv_umfpack.initialize(preconditioner_matrix.block(1, 1));
+      Mp_inv =
+          linear_operator(preconditioner_matrix.block(1, 1), Mp_inv_umfpack);
+    }
 
     const auto Zero = M * 0.0;
     SparseDirectUMFPACK M_immersed_inv_umfpack;
     M_immersed_inv_umfpack.initialize(mass_matrix_immersed);
 
+    auto invW = null_operator(M);
+    Vector<double> inverse_squares(mass_matrix_immersed.m());
+    for (types::global_dof_index i = 0; i < mass_matrix_immersed.m(); ++i)
+      inverse_squares(i) = 1. / (mass_matrix_immersed.diag_element(i) *
+                                 mass_matrix_immersed.diag_element(i));
+
+    DiagonalMatrix<Vector<double>> diag_inverse_square(inverse_squares);
     auto invW1 = linear_operator(mass_matrix_immersed, M_immersed_inv_umfpack);
-    auto invW = invW1 * invW1;
+    if (augmented_lagrangian_control.inverse_diag_square)
+      invW = linear_operator(diag_inverse_square);
+    else
+      invW = invW1 * invW1;
 
     const double gamma = augmented_lagrangian_control.gamma;
-    deallog << "gamma: " << gamma << std::endl;
+    const double gamma_grad_div = augmented_lagrangian_control.gamma_grad_div;
+    deallog << "gamma (Grad-div): " << gamma_grad_div << std::endl;
+    deallog << "gamma (AL): " << gamma << std::endl;
     auto Aug = null_operator(A);
     if (augmented_lagrangian_control.grad_div_stabilization)
       Aug = A + gamma * Ct * invW * C;
     else
-      Aug = A + gamma * Ct * invW * C + gamma * Bt * Mp_inv * B;
+      Aug = A + gamma * Ct * invW * C + gamma_grad_div * Bt * Mp_inv * B;
 
     BlockVector<double> solution_block;
     BlockVector<double> system_rhs_block;
@@ -926,10 +963,11 @@ void IBStokesProblem<dim, spacedim>::solve() {
             1. / (mass_matrix_immersed.diag_element(i) *
                   mass_matrix_immersed.diag_element(i));
 
-      build_AMG_augmented_block(*velocity_dh, coupling_matrix,
+      build_AMG_augmented_block(*velocity_dh, *space_dh, coupling_matrix,
                                 stokes_matrix.block(0, 0), coupling_sparsity,
                                 inverse_squares_multiplier, constraints, gamma,
                                 prec_amg_aug);
+      // prec_amg_aug.initialize(stokes_matrix.block(0, 0));
       Aug_inv = inverse_operator(Aug, solver_lagrangian, prec_amg_aug);
     } else if (augmented_lagrangian_control.AMG_preconditioner_augmented ==
                    false &&
@@ -944,8 +982,8 @@ void IBStokesProblem<dim, spacedim>::solve() {
     SolverFGMRES<BlockVector<double>> solver_fgmres(outer_solver_control);
 
     BlockPreconditionerAugmentedLagrangianStokes
-        augmented_lagrangian_preconditioner_Stokes{Aug_inv, Bt,     Ct,
-                                                   invW,    Mp_inv, gamma};
+        augmented_lagrangian_preconditioner_Stokes{
+            Aug_inv, Bt, Ct, invW, Mp_inv, gamma, gamma_grad_div};
     solver_fgmres.solve(AA, solution_block, system_rhs_block,
                         augmented_lagrangian_preconditioner_Stokes);
 

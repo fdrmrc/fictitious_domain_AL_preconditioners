@@ -5,11 +5,10 @@ set Coupling quadrature order                    = 3
 set Dirichlet boundary ids                       = 0, 1, 2, 3
 set Embedded configuration finite element degree = 1
 set Embedded space finite element degree         = 1
-set Initial embedded space refinement            = 6
-set Initial background space refinement          = 5
+set Initial embedded space refinement            = 7
+set Initial background space refinement          = 6
 set Local refinements steps near embedded domain = 1
 set Solver                                       = IBStokesAL
-set Use displacement in embedded interface       = false
 set Velocity space finite element degree         = 2
 set Verbosity level                              = 10
 
@@ -17,7 +16,9 @@ set Verbosity level                              = 10
   subsection Augmented Lagrangian control
 set AMG for augmented block            = true
 set Gamma                              = 10
+set Gamma Grad-div                     = 10
 set Grad-div stabilization             = true
+set Diagonal mass immersed             = true #Use diagonal (inverse-squared) of the immersed mass and pressure mass matrix
 set Log result                         = true
 set Max steps                          = 100
 set Tolerance for Augmented Lagrangian = 1.e-2 # default: 1e-4
@@ -48,7 +49,7 @@ set Function constants  =
    # If the function you are describing represents a vector-valued function
    # with multiple components, then separate the expressions for individual
    # components by a semicolon.
-set Function expression = 0;0   # default: 0
+set Function expression = 1;1   # default: 0
 
    # The names of the variables as they will be used in the function,
    # separated by commas. By default, the names of variables at which the
@@ -115,7 +116,7 @@ set Variable names      = x,y,t
    # `pi=3.1415926536' and then use `pi' in the expression of the actual
    # formula. (That said, for convenience this class actually defines both
    # `pi' and `Pi' by default, but you get the idea.)
-set Function constants  = R=.21, Cx=.5,Cy=.5                 # default: 
+set Function constants  = R=.21, Cx=.45,Cy=.45                 # default: 
 
    # The formula that denotes the function you want to evaluate for
    # particular values of the independent variables. This expression may
@@ -189,10 +190,10 @@ set Variable names      = x,y,t
 
   subsection Outer solver control
 set Log frequency = 1
-set Log history   = false
+set Log history   = true
 set Log result    = true
 set Max steps     = 1000   # default: 100
-set Reduction     = 1.e-20 # default: 1.e-2
+set Reduction     = 1.e-10 # default: 1.e-2
 set Tolerance     = 1.e-10
   end
 
