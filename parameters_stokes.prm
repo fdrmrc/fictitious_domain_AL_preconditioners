@@ -18,7 +18,7 @@ set AMG for augmented block            = true
 set Gamma                              = 10
 set Gamma Grad-div                     = 10
 set Grad-div stabilization             = true
-set Diagonal mass immersed             = true #Use diagonal (inverse-squared) of the immersed mass and pressure mass matrix
+set Diagonal mass immersed             = false #Use diagonal (inverse-squared) of the immersed mass and pressure mass matrix
 set Log result                         = true
 set Max steps                          = 100
 set Tolerance for Augmented Lagrangian = 1.e-2 # default: 1e-4
@@ -193,7 +193,7 @@ set Log frequency = 1
 set Log history   = true
 set Log result    = true
 set Max steps     = 1000   # default: 100
-set Reduction     = 1.e-10 # default: 1.e-2
+set Reduction     = 1.e-12 # default: 1.e-2
 set Tolerance     = 1.e-10
   end
 
