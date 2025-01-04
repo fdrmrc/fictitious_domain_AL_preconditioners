@@ -884,7 +884,7 @@ void create_augmented_block(
     auto multi_vector = scaling_vector.trilinos_vector();
 
     Assert((A_trilinos.NumGlobalRows() !=
-            C_trilinos.DomainMap().NumGlobalElements()),
+            C_trilinos.RangeMap().NumGlobalElements()),
            ExcMessage("Number of columns in C must match dimension of A"));
 
     // Ensure the MultiVector has only one column.
