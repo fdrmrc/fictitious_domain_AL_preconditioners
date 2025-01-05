@@ -61,6 +61,7 @@
 #include <deal.II/numerics/vector_tools.h>
 #include <mpi.h>
 
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -71,11 +72,6 @@
 #include "augmented_lagrangian_preconditioner.h"
 #include "rational_preconditioner.h"
 #include "utilities.h"
-
-#ifdef DEAL_II_WITH_TRILINOS
-#include <Epetra_CrsMatrix.h>
-#include <Epetra_RowMatrixTransposer.h>
-#endif
 
 namespace IBStokes {
 
@@ -122,6 +118,30 @@ struct ALControl {
     tol_AL = param.get_double("Tolerance for Augmented Lagrangian");
     log_result = param.get_bool("Log result");
     max_iterations_AL = param.get_integer("Max steps");
+  }
+};
+
+// Struct to pipe parameters for the embedded configuration. As we assume to
+// work with an immersed sphere, you can select radius and coordinates.
+template <int spacedim>
+struct ConfigurationControl {
+  double radius;  // gamma parameter for the augmented lagrangian formulation
+  double x_center;
+  double y_center;
+  double z_center;
+
+  void declare_parameters(ParameterHandler &param) {
+    param.declare_entry("Radius", "0.21", Patterns::Double());
+    param.declare_entry("x_c", "0.", Patterns::Double());
+    param.declare_entry("y_c", "0.", Patterns::Double());
+    if constexpr (spacedim == 3)
+      param.declare_entry("z_c", "0.", Patterns::Double());
+  }
+  void parse_parameters(ParameterHandler &param) {
+    radius = param.get_double("Radius");
+    x_center = param.get_double("x_c");
+    y_center = param.get_double("y_c");
+    if constexpr (spacedim == 3) z_center = param.get_double("z_c");
   }
 };
 
@@ -198,9 +218,6 @@ class IBStokesProblem {
   std::unique_ptr<DoFHandler<dim, spacedim>> embedded_configuration_dh;
   Vector<double> embedded_configuration;
 
-  ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>>
-      embedded_configuration_function;
-
   std::unique_ptr<Mapping<dim, spacedim>> embedded_mapping;
 
   ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>>
@@ -215,6 +232,8 @@ class IBStokesProblem {
   ParameterAcceptorProxy<ReductionControl> outer_solver_control;
 
   ParameterAcceptorProxy<ALControl> augmented_lagrangian_control;
+  ParameterAcceptorProxy<ConfigurationControl<spacedim>>
+      embedded_configuration_control;
 
   SparsityPattern coupling_sparsity;
   SparsityPattern coupling_sparsity_t;
@@ -302,23 +321,15 @@ IBStokesProblem<dim, spacedim>::Parameters::Parameters()
 template <int dim, int spacedim>
 IBStokesProblem<dim, spacedim>::IBStokesProblem(const Parameters &parameters)
     : parameters(parameters),
-      embedded_configuration_function("Embedded configuration", spacedim),
       embedded_value_function("Embedded value", spacedim),
       dirichlet_bc_function("Dirichlet boundary condition", spacedim + 1),
       body_force_function("Body force", spacedim),
       outer_solver_control("Outer solver control"),
       augmented_lagrangian_control("Augmented Lagrangian control"),
+      embedded_configuration_control("Embedded Configuration control"),
       mpi_comm(MPI_COMM_WORLD),
       pcout(std::cout, (Utilities::MPI::this_mpi_process(mpi_comm) == 0)),
       monitor(pcout, TimerOutput::summary, TimerOutput::cpu_and_wall_times) {
-  embedded_configuration_function.declare_parameters_call_back.connect(
-      []() -> void {
-        ParameterAcceptor::prm.set("Function constants", "R=.21, Cx=.5,Cy=.5");
-
-        ParameterAcceptor::prm.set("Function expression",
-                                   "R*cos(2*pi*x)+Cx; R*sin(2*pi*x)+Cy");
-      });
-
   embedded_value_function.declare_parameters_call_back.connect([]() -> void {
     ParameterAcceptor::prm.set("Function expression", "1; 1");
   });
@@ -348,6 +359,14 @@ IBStokesProblem<dim, spacedim>::IBStokesProblem(const Parameters &parameters)
         ParameterAcceptor::prm.set("Tolerance for Augmented Lagrangian",
                                    "1.e-4");
       });
+
+  embedded_configuration_control.declare_parameters_call_back.connect(
+      []() -> void {
+        ParameterAcceptor::prm.set("Radius", "0.21");
+        ParameterAcceptor::prm.set("x_c", "0.");
+        ParameterAcceptor::prm.set("y_c", "0.");
+        if constexpr (spacedim == 3) ParameterAcceptor::prm.set("z_c", "0.");
+      });
 }
 
 template <int dim, int spacedim>
@@ -373,7 +392,15 @@ void IBStokesProblem<dim, spacedim>::setup_grids_and_dofs() {
       std::make_unique<parallel::shared::Triangulation<dim, spacedim>>(
           mpi_comm);
 
-  GridGenerator::hyper_sphere(*embedded_grid, {.45, .45}, 0.21);
+  Point<spacedim> center =
+      (spacedim == 3)
+          ? Point<spacedim>{embedded_configuration_control.x_center,
+                            embedded_configuration_control.y_center,
+                            embedded_configuration_control.z_center}
+          : Point<spacedim>{embedded_configuration_control.x_center,
+                            embedded_configuration_control.y_center};
+  GridGenerator::hyper_sphere(*embedded_grid, center,
+                              embedded_configuration_control.radius);
   embedded_grid->refine_global(parameters.initial_embedded_refinement - 2);
   const unsigned int n_mpi_processes =
       Utilities::MPI::n_mpi_processes(mpi_comm);
