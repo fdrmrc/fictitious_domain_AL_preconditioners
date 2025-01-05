@@ -3,7 +3,7 @@
 # #
 
 # Set the name of the project and target:
-set(TARGET "block_demo")
+set(TARGET "stokes_immersed_boundary")
 
 # Declare all source files the target consists of. Here, this is only
 # the one step-X.cc file, but as you expand your project you may wish
@@ -37,15 +37,23 @@ endif()
 #
 # Are all dependencies fulfilled?
 #
-if(NOT DEAL_II_WITH_UMFPACK OR NOT DEAL_II_WITH_MUPARSER)
+#
+# Are all dependencies fulfilled?
+#
+if(NOT(DEAL_II_WITH_TRILINOS) OR NOT DEAL_II_WITH_P4EST OR NOT DEAL_II_WITH_UMFPACK OR NOT DEAL_II_WITH_MUPARSER)
   message(FATAL_ERROR "
 Error! This tutorial requires a deal.II library that was configured with the following options:
+    DEAL_II_WITH_TRILINOS = ON
+    DEAL_II_WITH_P4EST = ON
     DEAL_II_WITH_MUPARSER = ON
     DEAL_II_WITH_UMFPACK = ON
 However, the deal.II library found at ${DEAL_II_PATH} was configured with these options:
+    DEAL_II_WITH_P4EST = ${DEAL_II_WITH_P4EST}
+    DEAL_II_WITH_TRILINOS = ${DEAL_II_WITH_TRILINOS}
     DEAL_II_WITH_MUPARSER = ${DEAL_II_WITH_MUPARSER}
     DEAL_II_WITH_UMFPACK = ${DEAL_II_WITH_UMFPACK}
-This conflicts with the requirements."
+This conflicts with the requirements.
+One or both of the aforementioned combinations of prerequisites are not met by your installation, but at least one is required for this tutorial step."
   )
 endif()
 

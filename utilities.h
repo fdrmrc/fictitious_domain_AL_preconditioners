@@ -1170,6 +1170,8 @@ void create_augmented_block(
     const MatrixType &Ct, const VectorType &scaling_vector,
     const AffineConstraints<double> &velocity_constraints, const double gamma,
     MatrixType &augmented_matrix) {
+#ifdef DEAL_II_WITH_TRILINOS
+
   Assert(dim <= spacedim, ExcImpossibleInDimSpacedim(dim, spacedim));
 
   if constexpr (std::is_same_v<TrilinosWrappers::SparseMatrix, MatrixType>) {
@@ -1289,6 +1291,20 @@ void create_augmented_block(
     // PETSc not supported so far.
     AssertThrow(false, ExcNotImplemented("Matrix type not supported!"));
   }
+#else
+  AssertThrow(
+      false,
+      ExcMessage(
+          "This function requires deal.II to be configured with Trilinos."));
+
+  (void)velocity_dh;
+  (void)C;
+  (void)Ct;
+  (void)scaling_vector;
+  (void)velocity_constraints;
+  (void)gamma;
+  (void)augmented_matrix;
+#endif
 }
 
 }  // namespace UtilitiesAL
