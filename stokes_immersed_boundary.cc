@@ -602,34 +602,24 @@ void IBStokesProblem<dim, spacedim>::setup_coupling() {
   TimerOutput::Scope timer_section(monitor, "Setup coupling");
 
   const QGauss<dim> quad(parameters.coupling_quadrature_order);
-  // const QGauss<dim> quad(2 * embedded_fe->degree + 2);
 
   TrilinosWrappers::SparsityPattern dsp(velocity_dh->locally_owned_dofs(),
                                         embedded_dh->locally_owned_dofs(),
                                         mpi_comm);
 
-  // Here, we use velocity_dh: we want to couple DoF for velocity with the
-  // ones of the multiplier.
-  NonMatching::create_coupling_sparsity_pattern(
-      *space_grid_tools_cache, *velocity_dh, *embedded_dh, quad, dsp,
-      constraints, ComponentMask(), ComponentMask(), *embedded_mapping);
-
-  // Finalize the pattern so that it can be used with Trilinos matrices
-  dsp.compress();
-  pcout << "Sparsity Ct : done" << std::endl;
-  coupling_matrix.reinit(dsp);
-
-  // Do the same, but for the transpose
-  // DynamicSparsityPattern dsp_t(embedded_dh->n_dofs(), velocity_dh->n_dofs());
   TrilinosWrappers::SparsityPattern dsp_t(embedded_dh->locally_owned_dofs(),
                                           velocity_dh->locally_owned_dofs(),
                                           mpi_comm);
-  UtilitiesAL::create_coupling_sparsity_pattern_transpose(
-      *space_grid_tools_cache, *velocity_dh, *embedded_dh, quad, dsp_t,
+  // Here, we use velocity_dh: we want to couple DoF for velocity with the
+  // ones of the multiplier.
+  UtilitiesAL::create_coupling_sparsity_patterns(
+      *space_grid_tools_cache, *velocity_dh, *embedded_dh, quad, dsp_t, dsp,
       constraints, ComponentMask(), ComponentMask(), *embedded_mapping,
       AffineConstraints<double>());
+  dsp.compress();
   dsp_t.compress();
-  pcout << "Sparsity C : done" << std::endl;
+  pcout << "Sparsity coupling: done" << std::endl;
+  coupling_matrix.reinit(dsp);
   coupling_matrix_t.reinit(dsp_t);
 }
 
@@ -747,19 +737,13 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
     TimerOutput::Scope timer_section(monitor, "Assemble coupling system");
 
     const QGauss<dim> quad(parameters.coupling_quadrature_order);
-    // const QGauss<dim> quad(2 * embedded_fe->degree + 2);
-    NonMatching::create_coupling_mass_matrix(
-        *velocity_dh, *embedded_dh, quad, coupling_matrix, constraints,
-        ComponentMask(), ComponentMask(), MappingQ1<spacedim>(),
-        *embedded_mapping);
-    coupling_matrix.compress(VectorOperation::add);
 
-    // Assemble the transpose
-    UtilitiesAL::create_coupling_mass_matrix_transpose(
+    // Assemble C and Ct simultaneously
+    UtilitiesAL::create_coupling_mass_matrices(
         *space_grid_tools_cache, *velocity_dh, *embedded_dh, quad,
-        coupling_matrix_t, constraints, ComponentMask(), ComponentMask(),
-        *embedded_mapping, AffineConstraints<double>());
-
+        coupling_matrix_t, coupling_matrix, constraints, ComponentMask(),
+        ComponentMask(), *embedded_mapping, AffineConstraints<double>());
+    coupling_matrix.compress(VectorOperation::add);
     coupling_matrix_t.compress(VectorOperation::add);
 
     MatrixTools::create_mass_matrix(*embedded_mapping, *embedded_dh,
@@ -866,7 +850,7 @@ void IBStokesProblem<dim, spacedim>::assemble_preconditioner() {
 
     inverse_squares_multiplier.compress(VectorOperation::insert);
 
-    pcout << "Compute augmented block...";
+    pcout << "Compute augmented block..." << std::endl;
     UtilitiesAL::create_augmented_block(
         *velocity_dh, coupling_matrix_t, coupling_matrix,
         inverse_squares_multiplier, constraints_velocity,
