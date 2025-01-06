@@ -306,9 +306,6 @@ IBStokesProblem<dim, spacedim>::Parameters::Parameters()
   add_parameter("Embedded space finite element degree",
                 embedded_space_finite_element_degree);
 
-  add_parameter("Embedded configuration finite element degree",
-                embedded_configuration_finite_element_degree);
-
   add_parameter("Coupling quadrature order", coupling_quadrature_order);
 
   add_parameter("Verbosity level", verbosity_level);
@@ -329,7 +326,7 @@ IBStokesProblem<dim, spacedim>::IBStokesProblem(const Parameters &parameters)
       embedded_configuration_control("Embedded Configuration control"),
       mpi_comm(MPI_COMM_WORLD),
       pcout(std::cout, (Utilities::MPI::this_mpi_process(mpi_comm) == 0)),
-      monitor(pcout, TimerOutput::summary, TimerOutput::cpu_and_wall_times) {
+      monitor(pcout, TimerOutput::summary, TimerOutput::wall_times) {
   embedded_value_function.declare_parameters_call_back.connect([]() -> void {
     ParameterAcceptor::prm.set("Function expression", "1; 1");
   });
@@ -416,23 +413,43 @@ void IBStokesProblem<dim, spacedim>::setup_grids_and_dofs() {
   setup_embedded_dofs();
 
   std::vector<Point<spacedim>> support_points(embedded_dh->n_dofs());
-  if (parameters.delta_refinement != 0)
+  if (parameters.delta_refinement != 0) {
     DoFTools::map_dofs_to_support_points(*embedded_mapping, *embedded_dh,
                                          support_points);
 
-  for (unsigned int i = 0; i < parameters.delta_refinement; ++i) {
-    const auto point_locations = GridTools::compute_point_locations(
-        *space_grid_tools_cache, support_points);
-    const auto &cells = std::get<0>(point_locations);
-    for (auto &cell : cells) {
-      if (cell->is_locally_owned()) {
-        cell->set_refine_flag();
-        for (const auto face_no : cell->face_indices())
-          if (!cell->at_boundary(face_no))
-            cell->neighbor(face_no)->set_refine_flag();
+    // We now perform a localized refinement around the interface of the
+    // immersed domain. In case of a distributed tria, we exchange with other
+    // processes a rough description of the local portion of the domain using
+    // bounding boxes
+    IteratorFilters::LocallyOwnedCell locally_owned_cell_predicate;
+    std::vector<BoundingBox<spacedim>> local_bbox =
+        GridTools::compute_mesh_predicate_bounding_box(
+            *space_grid,
+            std::function<bool(const typename Triangulation<
+                               spacedim>::active_cell_iterator &)>(
+                locally_owned_cell_predicate),
+            1, false, 4);
+
+    // Obtaining the global mesh description through an all to all communication
+    std::vector<std::vector<BoundingBox<spacedim>>> global_bboxes;
+    global_bboxes = Utilities::MPI::all_gather(mpi_comm, local_bbox);
+
+    for (unsigned int i = 0; i < parameters.delta_refinement; ++i) {
+      // Notice how we call the distributed version of this function.
+      const auto point_locations =
+          GridTools::distributed_compute_point_locations(
+              *space_grid_tools_cache, support_points, global_bboxes);
+      const auto &cells = std::get<0>(point_locations);
+      for (auto &cell : cells) {
+        if (cell->is_locally_owned()) {
+          cell->set_refine_flag();
+          for (const auto face_no : cell->face_indices())
+            if (!cell->at_boundary(face_no))
+              cell->neighbor(face_no)->set_refine_flag();
+        }
       }
+      space_grid->execute_coarsening_and_refinement();
     }
-    space_grid->execute_coarsening_and_refinement();
   }
 
   const double embedded_space_maximal_diameter =
@@ -446,12 +463,13 @@ void IBStokesProblem<dim, spacedim>::setup_grids_and_dofs() {
         << embedded_space_maximal_diameter / background_space_minimal_diameter
         << std::endl;
 
-  AssertThrow(
-      embedded_space_maximal_diameter < background_space_minimal_diameter,
-      ExcMessage("The background grid is too refined (or the embedded grid "
-                 "is too coarse). Adjust the parameters so that the minimal"
-                 "grid size of the background grid is larger "
-                 "than the maximal grid size of the embedded grid."));
+  if constexpr (spacedim == 2)
+    AssertThrow(
+        embedded_space_maximal_diameter < background_space_minimal_diameter,
+        ExcMessage("The background grid is too refined (or the embedded grid "
+                   "is too coarse). Adjust the parameters so that the minimal"
+                   "grid size of the background grid is larger "
+                   "than the maximal grid size of the embedded grid."));
 
   setup_background_dofs();
 }
@@ -812,7 +830,7 @@ void IBStokesProblem<dim, spacedim>::assemble_preconditioner() {
       diag_inverse_pressure_matrix_trilinos.reinit(
           diag_inverse_pressure_sparsity);
 
-      SolverControl solver_control(100, 1e-14, false, false);
+      SolverControl solver_control(100, 1e-16, false, false);
       SolverCG<TrilinosWrappers::MPI::Vector> cg_solver(solver_control);
 
       if (augmented_lagrangian_control.inverse_diag_square) {
@@ -982,7 +1000,7 @@ void IBStokesProblem<dim, spacedim>::solve() {
     auto Mp_inv = null_operator(Mp);
 
     // Solver for the inversion of the pressure mass matrix.
-    SolverControl solver_control(100, 1e-14, false, false);
+    SolverControl solver_control(100, 1e-16, false, false);
     SolverCG<TrilinosWrappers::MPI::Vector> cg_solver(solver_control);
     // Inverse of the pressure mass matrix
     if (augmented_lagrangian_control.inverse_diag_square) {
@@ -1215,7 +1233,7 @@ void IBStokesProblem<dim, spacedim>::run() {
   setup_grids_and_dofs();
   setup_coupling();
   assemble_stokes();
-  if (augmented_lagrangian_control.AMG_preconditioner_augmented)
+  if (std::strcmp(parameters.solver.c_str(), "IBStokesAL") == 0)
     assemble_preconditioner();
   solve();
   output_results();
