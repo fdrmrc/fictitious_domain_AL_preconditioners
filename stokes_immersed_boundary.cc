@@ -215,8 +215,6 @@ class IBStokesProblem {
   std::unique_ptr<DoFHandler<dim, spacedim>> embedded_dh;
 
   std::unique_ptr<FiniteElement<dim, spacedim>> embedded_configuration_fe;
-  std::unique_ptr<DoFHandler<dim, spacedim>> embedded_configuration_dh;
-  Vector<double> embedded_configuration;
 
   std::unique_ptr<Mapping<dim, spacedim>> embedded_mapping;
 
