@@ -1286,6 +1286,7 @@ void create_augmented_block(
     delete temp2;
     // Finally, initialize the Trilinos matrix
     augmented_matrix.reinit(*result, true);
+    delete result;
 
   } else {
     // PETSc not supported so far.
