@@ -757,9 +757,7 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
 
       // exploit symmetry
       for (unsigned int i = 0; i < dofs_per_cell; ++i)
-        for (unsigned int j = i + 1; j < dofs_per_cell; ++j)
-
-        {
+        for (unsigned int j = i + 1; j < dofs_per_cell; ++j) {
           local_matrix(i, j) = local_matrix(j, i);
           local_preconditioner_matrix(i, j) = local_preconditioner_matrix(j, i);
         }
@@ -895,12 +893,12 @@ void IBStokesProblem<dim, spacedim>::assemble_preconditioner() {
 
     inverse_squares_multiplier.compress(VectorOperation::insert);
 
-    pcout << "Compute augmented block..." << std::endl;
+    pcout << "Computing augmented block..." << std::endl;
     UtilitiesAL::create_augmented_block(
         *velocity_dh, coupling_matrix_t, coupling_matrix,
         inverse_squares_multiplier, constraints_velocity,
         augmented_lagrangian_control.gamma, augmented_matrix);
-    pcout << ": done." << std::endl;
+    pcout << "Assembled augmented block." << std::endl;
   }
 }
 

@@ -1209,6 +1209,8 @@ void create_augmented_block(
       FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
 
       std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
+      std::vector<Tensor<2, spacedim>> grad_phi_u(dofs_per_cell);
+      std::vector<double> div_phi_u(dofs_per_cell);
 
       for (const auto &cell : velocity_dh.active_cell_iterators())
         if (cell->is_locally_owned()) {
@@ -1217,17 +1219,24 @@ void create_augmented_block(
           cell_matrix = 0.;
 
           for (unsigned int q_point = 0; q_point < n_q_points; ++q_point) {
+            for (unsigned int k = 0; k < dofs_per_cell; ++k) {
+              grad_phi_u[k] = fe_values[velocities].gradient(k, q_point);
+              div_phi_u[k] = fe_values[velocities].divergence(k, q_point);
+            }
+
             for (unsigned int i = 0; i < dofs_per_cell; ++i) {
-              for (unsigned int j = 0; j < dofs_per_cell; ++j)
+              for (unsigned int j = 0; j <= i; ++j)
                 cell_matrix(i, j) +=
-                    (scalar_product(
-                         fe_values[velocities].gradient(i, q_point),
-                         fe_values[velocities].gradient(j, q_point)) +
-                     gamma * fe_values[velocities].divergence(i, q_point) *
-                         fe_values[velocities].divergence(j, q_point)) *
+                    (scalar_product(grad_phi_u[i], grad_phi_u[j]) +
+                     gamma * div_phi_u[i] * div_phi_u[j]) *
                     fe_values.JxW(q_point);
             }
           }
+
+          // exploit symmetry
+          for (unsigned int i = 0; i < dofs_per_cell; ++i)
+            for (unsigned int j = i + 1; j < dofs_per_cell; ++j)
+              cell_matrix(i, j) = cell_matrix(j, i);
 
           cell->get_dof_indices(local_dof_indices);
           velocity_constraints.distribute_local_to_global(
@@ -1282,10 +1291,12 @@ void create_augmented_block(
                                  result);
     result->FillComplete();
 
-    delete temp1;
-    delete temp2;
     // Finally, initialize the Trilinos matrix
     augmented_matrix.reinit(*result, true);
+
+    // Delete unnecessary objects.
+    delete temp1;
+    delete temp2;
     delete result;
 
   } else {
