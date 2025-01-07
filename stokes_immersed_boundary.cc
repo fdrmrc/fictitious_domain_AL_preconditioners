@@ -14,6 +14,7 @@
 #include <deal.II/base/types.h>
 #include <deal.II/base/utilities.h>
 #include <deal.II/distributed/shared_tria.h>
+#include <deal.II/distributed/tria.h>
 #include <deal.II/dofs/dof_renumbering.h>
 #include <deal.II/dofs/dof_tools.h>
 #include <deal.II/fe/fe.h>
@@ -800,7 +801,7 @@ void IBStokesProblem<dim, spacedim>::assemble_multigrid() {
     mg_matrix_coupling_t[level].compress(VectorOperation::add);
   }
 
-  // Assemble the augmented product on each level
+  // Assemble the augmented term A + gamma C^T * W_inv * C on each level
   UtilitiesAL::assemble_multilevel_matrices(
       *velocity_dh, mg_matrix_coupling, mg_matrix_coupling_t,
       inverse_squares_multiplier, mg_constrained_dofs, mg_matrix,
@@ -1200,7 +1201,8 @@ void IBStokesProblem<dim, spacedim>::solve() {
     tmp = gamma * Ct * invW * embedded_rhs;
     // We now define the augmented rhs of the system.
     system_rhs_block.block(0) = stokes_rhs.block(0);
-    system_rhs_block.block(0).add(1., tmp);  // ! augmented
+    // system_rhs_block.block(0).add(1., tmp);  // ! augmented
+    // system_rhs_block.block(0) = 1.0;
     system_rhs_block.block(1) = stokes_rhs.block(1);
     system_rhs_block.block(2) = embedded_rhs;
 
@@ -1222,6 +1224,10 @@ void IBStokesProblem<dim, spacedim>::solve() {
         PreconditionMG<spacedim, TrilinosWrappers::MPI::Vector,
                        MGTransferPrebuilt<TrilinosWrappers::MPI::Vector>>>
         gmg_preconditioner;
+    std::unique_ptr<Multigrid<TrilinosWrappers::MPI::Vector>> mg;
+    std::unique_ptr<MGTransferPrebuilt<TrilinosWrappers::MPI::Vector>>
+        mg_transfer;
+
     if (augmented_lagrangian_control.AMG_preconditioner_augmented == true &&
         augmented_lagrangian_control.grad_div_stabilization == true) {
       const FEValuesExtractors::Vector velocity_components(0);
@@ -1249,9 +1255,10 @@ void IBStokesProblem<dim, spacedim>::solve() {
                    true) {
       // Define GMG preconditioner
 
-      MGTransferPrebuilt<TrilinosWrappers::MPI::Vector> mg_transfer(
-          mg_constrained_dofs);
-      mg_transfer.build(*velocity_dh);
+      mg_transfer =
+          std::make_unique<MGTransferPrebuilt<TrilinosWrappers::MPI::Vector>>(
+              mg_constrained_dofs);
+      mg_transfer->build(*velocity_dh);
 
       // Control for the coarse solver
       SolverControl coarse_solver_control(1000, 1e-12, false, false);
@@ -1276,15 +1283,15 @@ void IBStokesProblem<dim, spacedim>::solve() {
       mg::Matrix<TrilinosWrappers::MPI::Vector> mg_in(mg_interface_in);
       mg::Matrix<TrilinosWrappers::MPI::Vector> mg_out(mg_interface_in);
 
-      Multigrid<TrilinosWrappers::MPI::Vector> mg(
-          mg_m, coarse_grid_solver, mg_transfer, smoother, smoother);
-      mg.set_edge_matrices(mg_out, mg_in);
+      mg = std::make_unique<Multigrid<TrilinosWrappers::MPI::Vector>>(
+          mg_m, coarse_grid_solver, *mg_transfer, smoother, smoother);
+      mg->set_edge_matrices(mg_out, mg_in);
 
       gmg_preconditioner = std::make_unique<
           PreconditionMG<spacedim, TrilinosWrappers::MPI::Vector,
                          MGTransferPrebuilt<TrilinosWrappers::MPI::Vector>>>(
-          *velocity_dh, mg,
-          mg_transfer);  // create the preconditioner object...
+          *velocity_dh, *mg,
+          *mg_transfer);  // create the preconditioner object...
 
       // and use it to invert the augmented block
       Aug_inv = inverse_operator(Aug, solver_lagrangian, *gmg_preconditioner);

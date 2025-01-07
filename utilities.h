@@ -1356,28 +1356,11 @@ void assemble_multilevel_matrices(
                                      update_quadrature_points |
                                      update_JxW_values);
 
-    MGLevelObject<MatrixType> mg_matrix_velocity;
-    mg_matrix_velocity.resize(0, n_levels - 1);
-    mg_matrix_velocity.clear_elements();
-
-    for (unsigned int level = 0; level < n_levels; ++level) {
-      const IndexSet dof_set =
-          DoFTools::extract_locally_relevant_level_dofs(velocity_dh, level);
-
-      {
-        TrilinosWrappers::SparsityPattern dsp(
-            velocity_dh.locally_owned_mg_dofs(level),
-            velocity_dh.locally_owned_mg_dofs(level), dof_set, mpi_comm);
-        MGTools::make_sparsity_pattern(velocity_dh, dsp, level);
-
-        dsp.compress();
-        mg_matrix_velocity[level].reinit(dsp);
-      }
-    }
-
     // Next, loop over all multigrid levels
     std::vector<AffineConstraints<double>> boundary_constraints(
         triangulation.n_global_levels());
+    std::vector<AffineConstraints<double>> boundary_interface_constraints(
+        triangulation.n_levels());
     for (unsigned int level = 0; level < triangulation.n_global_levels();
          ++level) {
       const IndexSet dof_set =
@@ -1395,6 +1378,15 @@ void assemble_multilevel_matrices(
              mg_constrained_dofs.get_boundary_indices(level))
           boundary_constraints[level].constrain_dof_to_zero(dof_index);
         boundary_constraints[level].close();
+
+        const IndexSet idx =
+            mg_constrained_dofs.get_refinement_edge_indices(level) &
+            mg_constrained_dofs.get_boundary_indices(level);
+
+        for (const types::global_dof_index dof_index : idx)
+          boundary_interface_constraints[level].add_constraint(dof_index, {},
+                                                               0.);
+        boundary_interface_constraints[level].close();
       }
 
       {
@@ -1419,7 +1411,8 @@ void assemble_multilevel_matrices(
 
       // We now loop over cells (not only **active** cells)
       for (const auto &cell : velocity_dh.cell_iterators())
-        if (cell->is_locally_owned()) {
+        if (cell->level_subdomain_id() ==
+            triangulation.locally_owned_subdomain()) {
           fe_values.reinit(cell);
 
           cell_matrix = 0.;
@@ -1448,20 +1441,22 @@ void assemble_multilevel_matrices(
           cell->get_mg_dof_indices(local_dof_indices);
           // Do classical loc2glb, but using the right multigrid constraints
           boundary_constraints[cell->level()].distribute_local_to_global(
-              cell_matrix, local_dof_indices,
-              mg_matrix_velocity[cell->level()]);
+              cell_matrix, local_dof_indices, mg_matrix[cell->level()]);
 
           for (unsigned int i = 0; i < dofs_per_cell; ++i)
             for (unsigned int j = 0; j < dofs_per_cell; ++j)
-              if (mg_constrained_dofs.is_interface_matrix_entry(
-                      cell->level(), local_dof_indices[i],
-                      local_dof_indices[j]))
-                mg_interface_in[cell->level()].add(local_dof_indices[i],
-                                                   local_dof_indices[j],
-                                                   cell_matrix(i, j));
+              if (!mg_constrained_dofs.at_refinement_edge(
+                      cell->level(), local_dof_indices[i]) ||
+                  mg_constrained_dofs.at_refinement_edge(cell->level(),
+                                                         local_dof_indices[j]))
+                cell_matrix(i, j) = 0;
+
+          boundary_interface_constraints[cell->level()]
+              .distribute_local_to_global(cell_matrix, local_dof_indices,
+                                          mg_interface_in[cell->level()]);
         }
 
-      mg_matrix_velocity[level].compress(VectorOperation::add);
+      mg_matrix[level].compress(VectorOperation::add);
       mg_interface_in[level].compress(VectorOperation::add);
 
       // Extract Trilinos types
