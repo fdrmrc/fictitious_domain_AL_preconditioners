@@ -54,6 +54,11 @@
 #include <deal.II/lac/trilinos_vector.h>
 #include <deal.II/lac/vector.h>
 #include <deal.II/lac/vector_operation.h>
+#include <deal.II/multigrid/mg_coarse.h>
+#include <deal.II/multigrid/mg_matrix.h>
+#include <deal.II/multigrid/mg_smoother.h>
+#include <deal.II/multigrid/mg_transfer.h>
+#include <deal.II/multigrid/multigrid.h>
 #include <deal.II/non_matching/coupling.h>
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/data_out_dof_data.h>
@@ -92,6 +97,9 @@ struct ALControl {
                                 // stabilization
   bool inverse_diag_square;     // true if you want to use the inverse diagonal
                                 // squared (immersed)
+  bool GMG_preconditioner_augmented;  // true if you want to use GMG (geometric
+                                      // multigrid) preconditioner for augmented
+                                      // block
   bool AMG_preconditioner_augmented;  // true if you want to build AMG
                                       // preconditioner for augmented block
   double tol_AL;
@@ -103,7 +111,8 @@ struct ALControl {
     param.declare_entry("Gamma Grad-div", "10", Patterns::Double());
     param.declare_entry("Grad-div stabilization", "true", Patterns::Bool());
     param.declare_entry("Diagonal mass immersed", "true", Patterns::Bool());
-    param.declare_entry("AMG for augmented block", "true", Patterns::Bool());
+    param.declare_entry("GMG for augmented block", "true", Patterns::Bool());
+    param.declare_entry("AMG for augmented block", "false", Patterns::Bool());
     param.declare_entry("Tolerance for Augmented Lagrangian", "1e-4",
                         Patterns::Double());
     param.declare_entry("Max steps", "100", Patterns::Integer());
@@ -114,6 +123,7 @@ struct ALControl {
     gamma_grad_div = param.get_double("Gamma Grad-div");
     grad_div_stabilization = param.get_bool("Grad-div stabilization");
     inverse_diag_square = param.get_bool("Diagonal mass immersed");
+    GMG_preconditioner_augmented = param.get_bool("GMG for augmented block");
     AMG_preconditioner_augmented = param.get_bool("AMG for augmented block");
     tol_AL = param.get_double("Tolerance for Augmented Lagrangian");
     log_result = param.get_bool("Log result");
@@ -194,7 +204,11 @@ class IBStokesProblem {
 
   void setup_coupling();
 
+  void setup_multigrid();
+
   void assemble_stokes();
+
+  void assemble_multigrid();
 
   void assemble_preconditioner();
 
@@ -281,6 +295,18 @@ class IBStokesProblem {
   MPI_Comm mpi_comm;
   ConditionalOStream pcout;
   TimerOutput monitor;
+
+  // GMG related types
+
+  MGLevelObject<TrilinosWrappers::SparseMatrix> mg_matrix;
+  MGLevelObject<TrilinosWrappers::SparseMatrix> mg_mass_matrix_immersed;
+  MGLevelObject<TrilinosWrappers::SparseMatrix> mg_matrix_coupling;
+  MGLevelObject<TrilinosWrappers::SparseMatrix>
+      mg_matrix_coupling_t;  // For transpose
+  MGLevelObject<TrilinosWrappers::MPI::Vector> mg_inverse_squares_multiplier;
+
+  MGLevelObject<TrilinosWrappers::SparseMatrix> mg_interface_in;
+  MGConstrainedDoFs mg_constrained_dofs;
 };
 
 template <int dim, int spacedim>
@@ -375,7 +401,11 @@ void IBStokesProblem<dim, spacedim>::setup_grids_and_dofs() {
   TimerOutput::Scope timer_section(monitor, "Setup grids and dofs");
 
   space_grid = std::make_unique<parallel::distributed::Triangulation<spacedim>>(
-      mpi_comm);
+      mpi_comm, Triangulation<spacedim>::limit_level_difference_at_vertices,
+      (augmented_lagrangian_control.AMG_preconditioner_augmented == true)
+          ? parallel::distributed::Triangulation<spacedim>::default_setting
+          : parallel::distributed::Triangulation<
+                spacedim>::construct_multigrid_hierarchy);
 
   GridGenerator::hyper_cube(*space_grid, 0., 1, true);
 
@@ -667,6 +697,117 @@ void IBStokesProblem<dim, spacedim>::setup_coupling() {
 }
 
 template <int dim, int spacedim>
+void IBStokesProblem<dim, spacedim>::setup_multigrid() {
+  Assert((augmented_lagrangian_control.GMG_preconditioner_augmented == true),
+         ExcMessage(
+             "You should not assemble level matrices if GMG was disabled."));
+
+  TimerOutput::Scope timing(monitor, "Setup multigrid");
+
+  velocity_dh->distribute_mg_dofs();
+
+  mg_constrained_dofs.clear();
+  mg_constrained_dofs.initialize(*velocity_dh);
+  mg_constrained_dofs.make_zero_boundary_constraints(
+      *velocity_dh, {0, 1, 2, 3});  // TODO: take from parameters file
+
+  const unsigned int n_levels = space_grid->n_global_levels();
+
+  mg_matrix.resize(0, n_levels - 1);
+  mg_matrix.clear_elements();
+  mg_interface_in.resize(0, n_levels - 1);
+  mg_interface_in.clear_elements();
+  mg_matrix_coupling.resize(0, n_levels - 1);  // For coupling matrices
+  mg_matrix_coupling.clear_elements();
+  mg_mass_matrix_immersed.resize(0, n_levels - 1);  // Multiplier mass matrix
+  mg_mass_matrix_immersed.clear_elements();
+
+  for (unsigned int level = 0; level < n_levels; ++level) {
+    const IndexSet dof_set =
+        DoFTools::extract_locally_relevant_level_dofs(*velocity_dh, level);
+
+    {
+      TrilinosWrappers::SparsityPattern dsp(
+          velocity_dh->locally_owned_mg_dofs(level),
+          velocity_dh->locally_owned_mg_dofs(level), dof_set, mpi_comm);
+      MGTools::make_sparsity_pattern(*velocity_dh, dsp, level);
+
+      dsp.compress();
+      mg_matrix[level].reinit(dsp);
+    }
+
+    {
+      TrilinosWrappers::SparsityPattern dsp(
+          velocity_dh->locally_owned_mg_dofs(level),
+          velocity_dh->locally_owned_mg_dofs(level), dof_set, mpi_comm);
+
+      MGTools::make_interface_sparsity_pattern(*velocity_dh,
+                                               mg_constrained_dofs, dsp, level);
+      dsp.compress();
+      mg_interface_in[level].reinit(dsp);
+    }
+
+    // Coupling terms
+    const QGauss<dim> quad(parameters.coupling_quadrature_order);
+
+    TrilinosWrappers::SparsityPattern dsp(
+        velocity_dh->locally_owned_mg_dofs(level),
+        embedded_dh->locally_owned_dofs(), mpi_comm);
+
+    TrilinosWrappers::SparsityPattern dsp_t(
+        embedded_dh->locally_owned_dofs(),
+        velocity_dh->locally_owned_mg_dofs(level), mpi_comm);
+
+    // We couple DoF for velocity with the ones of the multiplier **on each
+    // level**
+    UtilitiesAL::create_coupling_sparsity_patterns(
+        *space_grid_tools_cache, *velocity_dh, *embedded_dh, quad, dsp_t, dsp,
+        constraints, ComponentMask(), ComponentMask(), *embedded_mapping,
+        AffineConstraints<double>());
+    dsp.compress();
+    dsp_t.compress();
+    pcout << "Sparsity coupling on level " << level << ": done" << std::endl;
+    mg_matrix_coupling[level].reinit(dsp);
+    mg_matrix_coupling_t[level].reinit(dsp_t);
+  }
+}
+
+template <int dim, int spacedim>
+void IBStokesProblem<dim, spacedim>::assemble_multigrid() {
+  Assert((augmented_lagrangian_control.GMG_preconditioner_augmented == true),
+         ExcMessage(
+             "You should not assemble level matrices if GMG was disabled."));
+  TimerOutput::Scope timing(monitor, "Assemble multigrid");
+
+  // Assemble coupling matrices on each multigrid level
+
+  const unsigned int n_levels = space_grid->n_global_levels();
+  const QGauss<dim> quad(parameters.coupling_quadrature_order);
+  std::vector<AffineConstraints<double>> boundary_constraints(n_levels);
+
+  for (unsigned int level = 0; level < n_levels; ++level) {
+    boundary_constraints[level].reinit(
+        velocity_dh->locally_owned_mg_dofs(level),
+        DoFTools::extract_locally_relevant_level_dofs(*velocity_dh, level));
+
+    // Assemble C and Ct simultaneously
+    UtilitiesAL::create_coupling_mass_matrices(
+        *space_grid_tools_cache, *velocity_dh, *embedded_dh, quad,
+        mg_matrix_coupling_t[level], mg_matrix_coupling[level],
+        boundary_constraints[level], ComponentMask(), ComponentMask(),
+        *embedded_mapping, AffineConstraints<double>());
+    mg_matrix_coupling[level].compress(VectorOperation::add);
+    mg_matrix_coupling_t[level].compress(VectorOperation::add);
+  }
+
+  // Assemble the augmented product on each level
+  UtilitiesAL::assemble_multilevel_matrices(
+      *velocity_dh, mg_matrix_coupling, mg_matrix_coupling_t,
+      inverse_squares_multiplier, mg_constrained_dofs, mg_matrix,
+      mg_interface_in, augmented_lagrangian_control.gamma);
+}
+
+template <int dim, int spacedim>
 void IBStokesProblem<dim, spacedim>::assemble_stokes() {
   stokes_matrix = 0;
   stokes_rhs = 0;
@@ -891,12 +1032,14 @@ void IBStokesProblem<dim, spacedim>::assemble_preconditioner() {
 
     inverse_squares_multiplier.compress(VectorOperation::insert);
 
-    pcout << "Computing augmented block..." << std::endl;
-    UtilitiesAL::create_augmented_block(
-        *velocity_dh, coupling_matrix_t, coupling_matrix,
-        inverse_squares_multiplier, constraints_velocity,
-        augmented_lagrangian_control.gamma, augmented_matrix);
-    pcout << "Assembled augmented block." << std::endl;
+    if (augmented_lagrangian_control.AMG_preconditioner_augmented == true) {
+      pcout << "Computing augmented block for AMG..." << std::endl;
+      UtilitiesAL::create_augmented_block(
+          *velocity_dh, coupling_matrix_t, coupling_matrix,
+          inverse_squares_multiplier, constraints_velocity,
+          augmented_lagrangian_control.gamma, augmented_matrix);
+      pcout << "Assembled augmented block for AMG." << std::endl;
+    }
   }
 }
 
@@ -1070,11 +1213,15 @@ void IBStokesProblem<dim, spacedim>::solve() {
     SolverCG<TrilinosWrappers::MPI::Vector> solver_lagrangian(
         control_lagrangian);
 
-    // Depending on the parameters file, we will initialize an AMG
-    // preconditioner or not.
+    // Depending on the parameters file, we will initialize an AMG or GMG
+    // preconditioner, or nothing.
     auto Aug_inv = null_operator(A);
     TrilinosWrappers::PreconditionAMG prec_amg_aug;
     TrilinosWrappers::PreconditionIdentity prec_id;
+    std::unique_ptr<
+        PreconditionMG<spacedim, TrilinosWrappers::MPI::Vector,
+                       MGTransferPrebuilt<TrilinosWrappers::MPI::Vector>>>
+        gmg_preconditioner;
     if (augmented_lagrangian_control.AMG_preconditioner_augmented == true &&
         augmented_lagrangian_control.grad_div_stabilization == true) {
       const FEValuesExtractors::Vector velocity_components(0);
@@ -1097,6 +1244,53 @@ void IBStokesProblem<dim, spacedim>::solve() {
       Aug_inv = inverse_operator(Aug, solver_lagrangian, prec_amg_aug);
       pcout << "Initialized AMG preconditioner" << std::endl;
     } else if (augmented_lagrangian_control.AMG_preconditioner_augmented ==
+                   false &&
+               augmented_lagrangian_control.GMG_preconditioner_augmented ==
+                   true) {
+      // Define GMG preconditioner
+
+      MGTransferPrebuilt<TrilinosWrappers::MPI::Vector> mg_transfer(
+          mg_constrained_dofs);
+      mg_transfer.build(*velocity_dh);
+
+      // Control for the coarse solver
+      SolverControl coarse_solver_control(1000, 1e-12, false, false);
+      SolverCG<TrilinosWrappers::MPI::Vector> coarse_solver(
+          coarse_solver_control);
+      PreconditionIdentity identity;  // no preconditioner for the coarse solver
+      MGCoarseGridIterativeSolver<TrilinosWrappers::MPI::Vector,
+                                  SolverCG<TrilinosWrappers::MPI::Vector>,
+                                  TrilinosWrappers::SparseMatrix,
+                                  PreconditionIdentity>
+          coarse_grid_solver(coarse_solver, mg_matrix[0], identity);
+
+      using Smoother = TrilinosWrappers::PreconditionJacobi;
+      MGSmootherPrecondition<TrilinosWrappers::SparseMatrix, Smoother,
+                             TrilinosWrappers::MPI::Vector>
+          smoother;
+
+      smoother.initialize(mg_matrix, 1.0);  // damping factor = 1
+      smoother.set_steps(1);                // smoothing steps = 1
+
+      mg::Matrix<TrilinosWrappers::MPI::Vector> mg_m(mg_matrix);
+      mg::Matrix<TrilinosWrappers::MPI::Vector> mg_in(mg_interface_in);
+      mg::Matrix<TrilinosWrappers::MPI::Vector> mg_out(mg_interface_in);
+
+      Multigrid<TrilinosWrappers::MPI::Vector> mg(
+          mg_m, coarse_grid_solver, mg_transfer, smoother, smoother);
+      mg.set_edge_matrices(mg_out, mg_in);
+
+      gmg_preconditioner = std::make_unique<
+          PreconditionMG<spacedim, TrilinosWrappers::MPI::Vector,
+                         MGTransferPrebuilt<TrilinosWrappers::MPI::Vector>>>(
+          *velocity_dh, mg,
+          mg_transfer);  // create the preconditioner object...
+
+      // and use it to invert the augmented block
+      Aug_inv = inverse_operator(Aug, solver_lagrangian, *gmg_preconditioner);
+    } else if (augmented_lagrangian_control.AMG_preconditioner_augmented ==
+                   false &&
+               augmented_lagrangian_control.GMG_preconditioner_augmented ==
                    false &&
                augmented_lagrangian_control.grad_div_stabilization == false) {
       // No preconditioner and no grad-div
@@ -1228,9 +1422,13 @@ void IBStokesProblem<dim, spacedim>::run() {
 
   setup_grids_and_dofs();
   setup_coupling();
+  if (augmented_lagrangian_control.GMG_preconditioner_augmented)
+    setup_multigrid();
   assemble_stokes();
   if (std::strcmp(parameters.solver.c_str(), "IBStokesAL") == 0)
     assemble_preconditioner();
+  if (augmented_lagrangian_control.GMG_preconditioner_augmented)
+    assemble_multigrid();
   solve();
   output_results();
 }

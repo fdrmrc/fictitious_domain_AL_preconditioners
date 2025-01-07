@@ -29,8 +29,12 @@
 #include <deal.II/lac/trilinos_precondition.h>
 #include <deal.II/lac/trilinos_sparse_matrix.h>
 #endif
-
 #include <deal.II/non_matching/coupling.h>
+
+// Multigrid related stuff
+#include <deal.II/base/mg_level_object.h>
+#include <deal.II/multigrid/mg_constrained_dofs.h>
+#include <deal.II/multigrid/mg_tools.h>
 
 #include <exception>
 #include <limits>
@@ -1298,6 +1302,224 @@ void create_augmented_block(
     delete temp1;
     delete temp2;
     delete result;
+
+  } else {
+    // PETSc not supported so far.
+    AssertThrow(false, ExcNotImplemented("Matrix type not supported!"));
+  }
+#else
+  AssertThrow(
+      false,
+      ExcMessage(
+          "This function requires deal.II to be configured with Trilinos."));
+
+  (void)velocity_dh;
+  (void)C;
+  (void)Ct;
+  (void)scaling_vector;
+  (void)velocity_constraints;
+  (void)gamma;
+  (void)augmented_matrix;
+#endif
+}
+
+// Similar to the function above, but assembling multigrid matrices on every
+// level.
+template <int dim, int spacedim, typename MatrixType = SparseMatrix<double>,
+          typename VectorType = Vector<typename MatrixType::value_type>>
+void assemble_multilevel_matrices(
+    const DoFHandler<dim, spacedim> &velocity_dh,
+    const MGLevelObject<MatrixType> &mg_matrix_coupling,
+    const MGLevelObject<MatrixType> &mg_matrix_coupling_t,
+    const VectorType &scaling_vector,
+    const MGConstrainedDoFs &mg_constrained_dofs,
+    MGLevelObject<MatrixType> &mg_matrix,
+    MGLevelObject<MatrixType> &mg_interface_in, const double gamma) {
+#ifdef DEAL_II_WITH_TRILINOS
+
+  Assert(dim <= spacedim, ExcImpossibleInDimSpacedim(dim, spacedim));
+
+  if constexpr (std::is_same_v<TrilinosWrappers::SparseMatrix, MatrixType>) {
+    Assert((std::is_same_v<TrilinosWrappers::MPI::Vector, VectorType>),
+           ExcMessage("You must use Trilinos vectors, as you are using "
+                      "Trilinos matrices."));
+
+    const Triangulation<spacedim> &triangulation =
+        velocity_dh.get_triangulation();
+    const unsigned int n_levels = triangulation.n_global_levels();
+    const MPI_Comm mpi_comm = triangulation.get_communicator();
+
+    const auto &space_fe = velocity_dh.get_fe();
+    const QGauss<spacedim> quadrature_formula(2 * space_fe.degree + 1);
+    FEValues<spacedim> fe_values(space_fe, quadrature_formula,
+                                 update_values | update_gradients |
+                                     update_quadrature_points |
+                                     update_JxW_values);
+
+    MGLevelObject<MatrixType> mg_matrix_velocity;
+    mg_matrix_velocity.resize(0, n_levels - 1);
+    mg_matrix_velocity.clear_elements();
+
+    for (unsigned int level = 0; level < n_levels; ++level) {
+      const IndexSet dof_set =
+          DoFTools::extract_locally_relevant_level_dofs(velocity_dh, level);
+
+      {
+        TrilinosWrappers::SparsityPattern dsp(
+            velocity_dh.locally_owned_mg_dofs(level),
+            velocity_dh.locally_owned_mg_dofs(level), dof_set, mpi_comm);
+        MGTools::make_sparsity_pattern(velocity_dh, dsp, level);
+
+        dsp.compress();
+        mg_matrix_velocity[level].reinit(dsp);
+      }
+    }
+
+    // Next, loop over all multigrid levels
+    std::vector<AffineConstraints<double>> boundary_constraints(
+        triangulation.n_global_levels());
+    for (unsigned int level = 0; level < triangulation.n_global_levels();
+         ++level) {
+      const IndexSet dof_set =
+          DoFTools::extract_locally_relevant_level_dofs(velocity_dh, level);
+
+      {
+        boundary_constraints[level].reinit(
+            velocity_dh.locally_owned_mg_dofs(level),
+            DoFTools::extract_locally_relevant_level_dofs(velocity_dh, level));
+
+        for (const types::global_dof_index dof_index :
+             mg_constrained_dofs.get_refinement_edge_indices(level))
+          boundary_constraints[level].constrain_dof_to_zero(dof_index);
+        for (const types::global_dof_index dof_index :
+             mg_constrained_dofs.get_boundary_indices(level))
+          boundary_constraints[level].constrain_dof_to_zero(dof_index);
+        boundary_constraints[level].close();
+      }
+
+      {
+        TrilinosWrappers::SparsityPattern dsp(
+            velocity_dh.locally_owned_mg_dofs(level),
+            velocity_dh.locally_owned_mg_dofs(level), dof_set, mpi_comm);
+
+        MGTools::make_interface_sparsity_pattern(
+            velocity_dh, mg_constrained_dofs, dsp, level);
+        dsp.compress();
+        mg_interface_in[level].reinit(dsp);
+      }
+
+      const unsigned int dofs_per_cell = space_fe.n_dofs_per_cell();
+      const unsigned int n_q_points = quadrature_formula.size();
+      const FEValuesExtractors::Vector velocities(0);
+      FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
+
+      std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
+      std::vector<Tensor<2, spacedim>> grad_phi_u(dofs_per_cell);
+      std::vector<double> div_phi_u(dofs_per_cell);
+
+      // We now loop over cells (not only **active** cells)
+      for (const auto &cell : velocity_dh.cell_iterators())
+        if (cell->is_locally_owned()) {
+          fe_values.reinit(cell);
+
+          cell_matrix = 0.;
+
+          for (unsigned int q_point = 0; q_point < n_q_points; ++q_point) {
+            for (unsigned int k = 0; k < dofs_per_cell; ++k) {
+              grad_phi_u[k] = fe_values[velocities].gradient(k, q_point);
+              div_phi_u[k] = fe_values[velocities].divergence(k, q_point);
+            }
+
+            for (unsigned int i = 0; i < dofs_per_cell; ++i) {
+              for (unsigned int j = 0; j <= i; ++j)
+                cell_matrix(i, j) +=
+                    (scalar_product(grad_phi_u[i], grad_phi_u[j]) +
+                     gamma * div_phi_u[i] * div_phi_u[j]) *
+                    fe_values.JxW(q_point);
+            }
+          }
+
+          // exploit symmetry
+          for (unsigned int i = 0; i < dofs_per_cell; ++i)
+            for (unsigned int j = i + 1; j < dofs_per_cell; ++j)
+              cell_matrix(i, j) = cell_matrix(j, i);
+
+          // Get dof indices for this multigrid level
+          cell->get_mg_dof_indices(local_dof_indices);
+          // Do classical loc2glb, but using the right multigrid constraints
+          boundary_constraints[cell->level()].distribute_local_to_global(
+              cell_matrix, local_dof_indices,
+              mg_matrix_velocity[cell->level()]);
+
+          for (unsigned int i = 0; i < dofs_per_cell; ++i)
+            for (unsigned int j = 0; j < dofs_per_cell; ++j)
+              if (mg_constrained_dofs.is_interface_matrix_entry(
+                      cell->level(), local_dof_indices[i],
+                      local_dof_indices[j]))
+                mg_interface_in[cell->level()].add(local_dof_indices[i],
+                                                   local_dof_indices[j],
+                                                   cell_matrix(i, j));
+        }
+
+      mg_matrix_velocity[level].compress(VectorOperation::add);
+      mg_interface_in[level].compress(VectorOperation::add);
+
+      // Extract Trilinos types
+      Epetra_CrsMatrix A_trilinos = mg_matrix_velocity[level].trilinos_matrix();
+      Epetra_CrsMatrix C_trilinos = mg_matrix_coupling[level].trilinos_matrix();
+      Epetra_CrsMatrix Ct_trilinos =
+          mg_matrix_coupling_t[level].trilinos_matrix();
+      auto multi_vector = scaling_vector.trilinos_vector();
+
+      Assert((A_trilinos.NumGlobalRows() !=
+              C_trilinos.RangeMap().NumGlobalElements()),
+             ExcMessage("Number of columns in C must match dimension of A"));
+
+      // Ensure the MultiVector has only one column.
+      Assert((multi_vector.NumVectors() == 1),
+             ExcMessage("The MultiVector must have exactly one column."));
+
+      // Create diagonal matrix from first vector of v
+      // Explicitly cast the map to Epetra_Map
+      const Epetra_Map &map =
+          static_cast<const Epetra_Map &>(multi_vector.Map());
+
+      // Create a diagonal matrix with 1 nonzero entry per row
+      Epetra_CrsMatrix diag_matrix(Copy, map, 1);
+      for (int i = 0; i < multi_vector.Map().NumMyElements(); ++i) {
+        int global_row = multi_vector.Map().GID(i);
+        double val = multi_vector[0][i];  // Access first vector
+        diag_matrix.InsertGlobalValues(global_row, 1, &val, &global_row);
+      }
+      diag_matrix.FillComplete();
+
+      // Compute C^T * diag(v)
+      Epetra_CrsMatrix *temp1 =
+          new Epetra_CrsMatrix(Copy, Ct_trilinos.RowMap(), 0);
+      EpetraExt::MatrixMatrix::Multiply(Ct_trilinos, false, diag_matrix, false,
+                                        *temp1);
+
+      // Compute (C^T * diag(v)) * C
+      Epetra_CrsMatrix *temp2 = new Epetra_CrsMatrix(Copy, temp1->RowMap(), 0);
+      EpetraExt::MatrixMatrix::Multiply(*temp1, false, C_trilinos, false,
+                                        *temp2);
+      temp2->Scale(gamma);
+
+      // Add A to the result
+      Epetra_CrsMatrix *result = new Epetra_CrsMatrix(
+          Copy, A_trilinos.RowMap(), A_trilinos.MaxNumEntries());
+      EpetraExt::MatrixMatrix::Add(A_trilinos, false, 1.0, *temp2, false, 1.0,
+                                   result);
+      result->FillComplete();
+
+      // Finally, initialize the Trilinos matrix **on each level**
+      mg_matrix[level].reinit(*result, true);
+
+      // Delete unnecessary objects.
+      delete temp1;
+      delete temp2;
+      delete result;
+    }
 
   } else {
     // PETSc not supported so far.
