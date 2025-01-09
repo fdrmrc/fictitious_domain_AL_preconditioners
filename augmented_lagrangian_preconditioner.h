@@ -9,6 +9,8 @@
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/vector.h>
 
+#include <type_traits>
+
 using namespace dealii;
 
 class BlockPreconditionerAugmentedLagrangian {
@@ -41,15 +43,22 @@ class BlockPreconditionerAugmentedLagrangian {
   double gamma;
 };
 
+template <typename VectorType, typename BlockVectorType>
 class BlockPreconditionerAugmentedLagrangianStokes {
  public:
+  using PayloadType =
+      std::conditional_t<std::is_same_v<VectorType, Vector<double>>,
+                         internal::LinearOperatorImplementation::EmptyPayload,
+                         dealii::TrilinosWrappers::internal::
+                             LinearOperatorImplementation::TrilinosPayload>;
+
   BlockPreconditionerAugmentedLagrangianStokes(
-      const LinearOperator<Vector<double>> Aug_inv_,
-      const LinearOperator<Vector<double>> Bt_,
-      const LinearOperator<Vector<double>> Ct_,
-      const LinearOperator<Vector<double>> invW_,
-      const LinearOperator<Vector<double>> Mp_inv_, const double gamma_,
-      const double gamma_grad_div_) {
+      const LinearOperator<VectorType, VectorType, PayloadType> Aug_inv_,
+      const LinearOperator<VectorType, VectorType, PayloadType> Bt_,
+      const LinearOperator<VectorType, VectorType, PayloadType> Ct_,
+      const LinearOperator<VectorType, VectorType, PayloadType> invW_,
+      const LinearOperator<VectorType, VectorType, PayloadType> Mp_inv_,
+      const double gamma_, const double gamma_grad_div_) {
     Aug_inv = Aug_inv_;
     Bt = Bt_;
     Ct = Ct_;
@@ -59,7 +68,7 @@ class BlockPreconditionerAugmentedLagrangianStokes {
     gamma_grad_div = gamma_grad_div_;
   }
 
-  void vmult(BlockVector<double> &v, const BlockVector<double> &u) const {
+  void vmult(BlockVectorType &v, const BlockVectorType &u) const {
     v.block(0) = 0.;
     v.block(1) = 0.;
     v.block(2) = 0.;
@@ -69,11 +78,11 @@ class BlockPreconditionerAugmentedLagrangianStokes {
     v.block(0) = Aug_inv * (u.block(0) - Bt * v.block(1) - Ct * v.block(2));
   }
 
-  LinearOperator<Vector<double>> Aug_inv;
-  LinearOperator<Vector<double>> Bt;
-  LinearOperator<Vector<double>> invW;
-  LinearOperator<Vector<double>> Mp_inv;
-  LinearOperator<Vector<double>> Ct;
+  LinearOperator<VectorType, VectorType, PayloadType> Aug_inv;
+  LinearOperator<VectorType, VectorType, PayloadType> Bt;
+  LinearOperator<VectorType, VectorType, PayloadType> invW;
+  LinearOperator<VectorType, VectorType, PayloadType> Mp_inv;
+  LinearOperator<VectorType, VectorType, PayloadType> Ct;
   double gamma;
   double gamma_grad_div;
 };
