@@ -397,9 +397,6 @@ void IBStokesProblem<dim, spacedim>::setup_grids_and_dofs() {
   GridGenerator::hyper_sphere(*embedded_grid, center,
                               embedded_configuration_control.radius);
   embedded_grid->refine_global(parameters.initial_embedded_refinement - 2);
-  const unsigned int n_mpi_processes =
-      Utilities::MPI::n_mpi_processes(mpi_comm);
-  GridTools::partition_triangulation(n_mpi_processes, *embedded_grid);
 
   embedded_configuration_fe = std::make_unique<FESystem<dim, spacedim>>(
       FE_Q<dim, spacedim>(
@@ -1216,6 +1213,16 @@ void IBStokesProblem<dim, spacedim>::output_results() {
     pcout << "***CCt solve not successfull (see condition number above)***"
           << std::endl;
   }
+
+  // Check if C has full rank
+
+  const auto &C_trilinos = coupling_matrix.trilinos_matrix();
+  const auto &Ct_trilinos = coupling_matrix_t.trilinos_matrix();
+  bool is_full_rank = UtilitiesAL::checkFullRank(C_trilinos, Ct_trilinos);
+  if (is_full_rank)
+    pcout << "C has full rank" << std::endl;
+  else
+    pcout << "***C does not have full rank***" << std::endl;
 }
 
 template <int dim, int spacedim>

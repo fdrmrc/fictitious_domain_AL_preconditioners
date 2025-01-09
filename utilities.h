@@ -20,6 +20,8 @@
 #include <type_traits>
 
 #ifdef DEAL_II_WITH_TRILINOS
+#include <Amesos.h>
+#include <Amesos_BaseSolver.h>
 #include <EpetraExt_MatrixMatrix.h>
 #include <EpetraExt_Transpose_RowMatrix.h>
 #include <Epetra_Comm.h>
@@ -1317,6 +1319,46 @@ void create_augmented_block(
   (void)gamma;
   (void)augmented_matrix;
 #endif
+}
+
+bool checkFullRank(const Epetra_CrsMatrix &C, const Epetra_CrsMatrix &CT,
+                   double tolerance = 1e-12) {
+  // Form C^T * C
+  Epetra_CrsMatrix *product =
+      new Epetra_CrsMatrix(Epetra_DataAccess::Copy, CT.RowMap(), 0);
+  EpetraExt::MatrixMatrix::Multiply(CT, false, C, false, *product);
+
+  // Setup linear system with Amesos
+  Epetra_LinearProblem problem;
+  problem.SetOperator(product);
+
+  // Create solver instance (KLU is good for serial, Mumps for parallel)
+  Amesos factory;
+  std::string solverType = product->Comm().NumProc() == 1 ? "Klu" : "Mumps";
+  Amesos_BaseSolver *solver = factory.Create(solverType, problem);
+
+  if (solver == NULL) {
+    delete product;
+    return false;
+  }
+
+  // Initialize the solver
+  int initOK = solver->SymbolicFactorization();
+  if (initOK != 0) {
+    delete solver;
+    delete product;
+    return false;
+  }
+
+  // Attempt numerical factorization
+  int factorOK = solver->NumericFactorization();
+
+  // Clean up
+  delete solver;
+  delete product;
+
+  // If factorization succeeded, matrix is full rank
+  return (factorOK == 0);
 }
 
 }  // namespace UtilitiesAL
