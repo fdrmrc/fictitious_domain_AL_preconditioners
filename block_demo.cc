@@ -1142,6 +1142,20 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
 
     BlockPreconditionerAugmentedLagrangian augmented_lagrangian_preconditioner{
         Aug_inv, C, Ct, invW, gamma};
+
+    // Export matrix to Matlab
+    export_to_matlab_csv(augmented_block, "aug.csv");
+    export_to_matlab_csv(coupling_matrix, "Ct.csv");
+
+    Vector<double> squares_export(mass_matrix.m());  // M^{2}\gamma
+    for (types::global_dof_index i = 0; i < mass_matrix.m(); ++i)
+      squares_export(i) =
+          (mass_matrix.diag_element(i) * mass_matrix.diag_element(i)) /
+          (-1. * gamma);
+
+    DiagonalMatrix<Vector<double>> W(squares_export);
+    export_to_matlab_csv(W, "W.csv");
+
     solver_fgmres.solve(AA, solution_block, system_rhs_block,
                         augmented_lagrangian_preconditioner);
 

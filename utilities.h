@@ -7,6 +7,8 @@
 #include <deal.II/lac/utilities.h>
 #include <deal.II/lac/vector.h>
 
+#include <type_traits>
+
 #ifdef DEAL_II_WITH_TRILINOS
 #include <Epetra_CrsMatrix.h>
 #include <Epetra_RowMatrixTransposer.h>
@@ -44,6 +46,25 @@ double compute_l2_norm_matrix(const SparseMatrix<double>& C,
     std::cout << "Not computed, setting NaN." << std::endl;
     return std::numeric_limits<double>::quiet_NaN();
   }
+}
+
+template <typename MatrixType>
+void export_to_matlab_csv(const MatrixType& matrix,
+                          const std::string& filename) {
+  std::ofstream out(filename);
+  out.precision(16);  // Use high precision for the values
+
+  // Write full matrix as CSV
+  for (unsigned int row = 0; row < matrix.m(); ++row) {
+    for (unsigned int col = 0; col < matrix.n(); ++col) {
+      out << matrix.el(row, col);
+      if (col < matrix.n() - 1) {
+        out << ",";
+      }
+    }
+    out << "\n";
+  }
+  out.close();
 }
 
 template <int dim, int spacedim>
@@ -168,6 +189,70 @@ void build_AMG_augmented_block(
       velocity_dh, QGauss<spacedim>(2 * space_fe.degree + 1),
       stiffness_matrix_copy, static_cast<const Function<spacedim>*>(nullptr),
       space_constraints);
+  export_to_matlab_csv(stiffness_matrix_copy, "velocity_stokes.csv");
+  stiffness_matrix_copy *= 0.;
+
+  {
+    const QGauss<spacedim> quadrature_formula(space_fe.degree + 2);
+
+    FEValues<spacedim> fe_values(space_fe, quadrature_formula,
+                                 update_values | update_quadrature_points |
+                                     update_JxW_values | update_gradients);
+
+    const unsigned int dofs_per_cell = space_fe.n_dofs_per_cell();
+
+    const unsigned int n_q_points = quadrature_formula.size();
+
+    FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
+    FullMatrix<double> local_preconditioner_matrix(dofs_per_cell,
+                                                   dofs_per_cell);
+    Vector<double> local_rhs(dofs_per_cell);
+
+    std::vector<unsigned int> local_dof_indices(dofs_per_cell);
+
+    const FEValuesExtractors::Vector velocities(0);
+    const FEValuesExtractors::Scalar pressure(spacedim);
+
+    // Precompute stuff for Stokes' weak form
+    std::vector<SymmetricTensor<2, spacedim>> symgrad_phi_u(dofs_per_cell);
+    std::vector<Tensor<2, spacedim>> grad_phi_u(dofs_per_cell);
+    std::vector<double> div_phi_u(dofs_per_cell);
+    std::vector<Tensor<1, spacedim>> phi_u(dofs_per_cell);
+    std::vector<double> phi_p(dofs_per_cell);
+
+    for (const auto& cell : velocity_dh.active_cell_iterators()) {
+      fe_values.reinit(cell);
+      local_matrix = 0;
+
+      for (unsigned int q = 0; q < n_q_points; ++q) {
+        for (unsigned int k = 0; k < dofs_per_cell; ++k) {
+          grad_phi_u[k] = fe_values[velocities].gradient(k, q);
+          div_phi_u[k] = fe_values[velocities].divergence(k, q);
+        }
+
+        for (unsigned int i = 0; i < dofs_per_cell; ++i) {
+          for (unsigned int j = 0; j <= i; ++j) {
+            local_matrix(i, j) +=
+                (1. * scalar_product(grad_phi_u[i],
+                                     grad_phi_u[j])  // symgrad-symgrad
+                 + gamma * div_phi_u[i] *
+                       div_phi_u[j]) *  // grad-div stabilization
+                fe_values.JxW(q);
+          }
+        }
+      }
+
+      // exploit symmetry
+      for (unsigned int i = 0; i < dofs_per_cell; ++i)
+        for (unsigned int j = i + 1; j < dofs_per_cell; ++j) {
+          local_matrix(i, j) = local_matrix(j, i);
+        }
+
+      cell->get_dof_indices(local_dof_indices);
+      space_constraints.distribute_local_to_global(
+          local_matrix, local_dof_indices, stiffness_matrix_copy);
+    }
+  }
 
   augmented_block.reinit(stiffness_matrix_copy);
   augmented_block.copy_from(stiffness_matrix_copy);
@@ -196,7 +281,8 @@ void build_AMG_augmented_block(
   //   coupling_t.print_formatted(std::cout);
   //   inverse_squares.print(std::cout);
   // #endif
-}
 
+  export_to_matlab_csv(augmented_block, "augmented_matrix_stokes.csv");
+}
 
 #endif
