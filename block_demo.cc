@@ -1153,7 +1153,12 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
           (mass_matrix.diag_element(i) * mass_matrix.diag_element(i)) /
           (-1. * gamma);
 
-    DiagonalMatrix<Vector<double>> W(squares_export);
+    SparseMatrix<double> W;
+    W.reinit(mass_matrix.get_sparsity_pattern());
+    for (unsigned int i = 0; i < mass_matrix.m(); ++i) {
+      W.set(i, i, squares_export[i]);
+    }
+
     export_to_matlab_csv(W, "W.csv");
 
     solver_fgmres.solve(AA, solution_block, system_rhs_block,
