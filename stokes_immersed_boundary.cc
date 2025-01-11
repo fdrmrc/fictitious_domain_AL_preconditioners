@@ -1004,6 +1004,31 @@ template <int dim, int spacedim>
 void IBStokesProblem<dim, spacedim>::output_results() {
   TimerOutput::Scope timer_section(monitor, "Output results");
 
+  // Export matrices for eigenvalues estimates
+  SparseMatrix<double> Q;
+  Q.reinit(preconditioner_matrix.block(1, 1).get_sparsity_pattern());
+  Q.copy_from(preconditioner_matrix.block(1, 1));
+  Q *= -1. / augmented_lagrangian_control.gamma_grad_div;
+  export_to_matlab_csv(Q, "Q_stokes.csv");
+
+  Vector<double> squares_multiplier(mass_matrix_immersed.m());  // -M^{2}/gamma
+  for (types::global_dof_index i = 0; i < mass_matrix_immersed.m(); ++i)
+    squares_multiplier(i) = mass_matrix_immersed.diag_element(i) *
+                            mass_matrix_immersed.diag_element(i) *
+                            (-1. / augmented_lagrangian_control.gamma);
+
+  SparseMatrix<double> W;
+  W.reinit(mass_matrix_immersed.get_sparsity_pattern());
+  for (unsigned int i = 0; i < mass_matrix_immersed.m(); ++i) {
+    W.set(i, i, squares_multiplier[i]);
+  }
+
+  // export_to_matlab_csv(mass_matrix_immersed, "W_stokes.csv");
+  export_to_matlab_csv(W, "W_stokes.csv");
+  export_to_matlab_csv(stokes_matrix.block(0, 1), "Bt_stokes.csv");
+  export_to_matlab_csv(coupling_matrix, "Ct_stokes.csv");
+  // export_to_matlab_csv(stokes_matrix.block(1, 0), "B.csv");
+
   {
     DataOut<dim, spacedim> embedded_out;
 
