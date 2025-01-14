@@ -67,6 +67,30 @@ void export_to_matlab_csv(const MatrixType& matrix,
   out.close();
 }
 
+void export_sparse_to_matlab_csv(const dealii::SparseMatrix<double>& matrix,
+                                 const std::string& filename) {
+  std::ofstream out(filename);
+
+  if (!out.is_open()) {
+    throw std::runtime_error("Failed to open the file for writing.");
+  }
+
+  // Iterate over all rows
+  for (unsigned int row = 0; row < matrix.m(); ++row) {
+    // Iterate over all nonzero entries in the current row
+    for (dealii::SparseMatrix<double>::const_iterator entry = matrix.begin(row);
+         entry != matrix.end(row); ++entry) {
+      // Get the column index and value
+      unsigned int col = entry->column();
+      double value = entry->value();
+      out << row + 1 << " " << col + 1 << " " << value
+          << "\n";  // MATLAB uses 1-based indexing
+    }
+  }
+
+  out.close();
+}
+
 template <int dim, int spacedim>
 void build_AMG_augmented_block(
     const DoFHandler<dim, spacedim>& velocity_dh,
@@ -189,7 +213,7 @@ void build_AMG_augmented_block(
       velocity_dh, QGauss<spacedim>(2 * space_fe.degree + 1),
       stiffness_matrix_copy, static_cast<const Function<spacedim>*>(nullptr),
       space_constraints);
-  export_to_matlab_csv(stiffness_matrix_copy, "velocity_stokes.csv");
+  export_sparse_to_matlab_csv(stiffness_matrix_copy, "velocity_stokes.txt");
   stiffness_matrix_copy *= 0.;
 
   {

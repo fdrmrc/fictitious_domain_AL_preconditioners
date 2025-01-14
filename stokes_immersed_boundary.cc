@@ -765,6 +765,17 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
           << stokes_matrix.block(1, 0).n() << ")" << std::endl;
   deallog << "C dimensions (" << coupling_matrix.n() << ","
           << coupling_matrix.m() << ")" << std::endl;
+
+  // Export matrices for eigenvalues estimates
+  export_sparse_to_matlab_csv(stokes_matrix.block(0, 0), "A_stokes.txt");
+  export_sparse_to_matlab_csv(stokes_matrix.block(0, 1), "Bt_stokes.txt");
+
+  export_to_matlab_csv(coupling_matrix, "Ct_stokes.csv");
+  // export_sparse_to_matlab_csv(coupling_matrix, "Ct_stokes.txt");
+  export_sparse_to_matlab_csv(preconditioner_matrix.block(1, 1),
+                              "Q_stokes.txt");
+  export_sparse_to_matlab_csv(mass_matrix_immersed, "W_stokes.txt");
+  std::cout << "Exported matrices for eigenvalue analysis" << std::endl;
 }
 
 void output_double_number(double input, const std::string &text) {
@@ -1004,12 +1015,11 @@ template <int dim, int spacedim>
 void IBStokesProblem<dim, spacedim>::output_results() {
   TimerOutput::Scope timer_section(monitor, "Output results");
 
-  // Export matrices for eigenvalues estimates
+  // Export approximate matrices for eigenvalues estimates
   SparseMatrix<double> Q;
   Q.reinit(preconditioner_matrix.block(1, 1).get_sparsity_pattern());
   Q.copy_from(preconditioner_matrix.block(1, 1));
   Q *= -1. / augmented_lagrangian_control.gamma_grad_div;
-  export_to_matlab_csv(Q, "Q_stokes.csv");
 
   Vector<double> squares_multiplier(mass_matrix_immersed.m());  // -M^{2}/gamma
   for (types::global_dof_index i = 0; i < mass_matrix_immersed.m(); ++i)
@@ -1023,11 +1033,8 @@ void IBStokesProblem<dim, spacedim>::output_results() {
     W.set(i, i, squares_multiplier[i]);
   }
 
-  // export_to_matlab_csv(mass_matrix_immersed, "W_stokes.csv");
-  export_to_matlab_csv(W, "W_stokes.csv");
-  export_to_matlab_csv(stokes_matrix.block(0, 1), "Bt_stokes.csv");
-  export_to_matlab_csv(coupling_matrix, "Ct_stokes.csv");
-  // export_to_matlab_csv(stokes_matrix.block(1, 0), "B.csv");
+  export_to_matlab_csv(mass_matrix_immersed, "Q_stokes_approx.txt");
+  export_to_matlab_csv(W, "W_stokes_approx.txt");
 
   {
     DataOut<dim, spacedim> embedded_out;
