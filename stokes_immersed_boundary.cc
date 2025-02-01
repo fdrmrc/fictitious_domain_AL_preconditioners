@@ -767,7 +767,11 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
           << coupling_matrix.m() << ")" << std::endl;
 
   // Export matrices for eigenvalues estimates
-  export_sparse_to_matlab_csv(stokes_matrix.block(0, 0), "A_stokes.txt");
+  if (augmented_lagrangian_control.grad_div_stabilization == true)
+    export_sparse_to_matlab_csv(stokes_matrix.block(0, 0), "grad_div_term.txt");
+  else
+    export_sparse_to_matlab_csv(stokes_matrix.block(0, 0), "A_stokes.txt");
+
   export_sparse_to_matlab_csv(stokes_matrix.block(0, 1), "Bt_stokes.txt");
 
   export_to_matlab_csv(coupling_matrix, "Ct_stokes.csv");
@@ -1020,6 +1024,7 @@ void IBStokesProblem<dim, spacedim>::output_results() {
   Q.reinit(preconditioner_matrix.block(1, 1).get_sparsity_pattern());
   Q.copy_from(preconditioner_matrix.block(1, 1));
   Q *= -1. / augmented_lagrangian_control.gamma_grad_div;
+  export_to_matlab_csv(Q, "Q_stokes_approx.csv");
 
   Vector<double> squares_multiplier(mass_matrix_immersed.m());  // -M^{2}/gamma
   for (types::global_dof_index i = 0; i < mass_matrix_immersed.m(); ++i)
@@ -1033,8 +1038,7 @@ void IBStokesProblem<dim, spacedim>::output_results() {
     W.set(i, i, squares_multiplier[i]);
   }
 
-  export_to_matlab_csv(mass_matrix_immersed, "Q_stokes_approx.txt");
-  export_to_matlab_csv(W, "W_stokes_approx.txt");
+  export_to_matlab_csv(W, "W_stokes_approx.csv");
 
   {
     DataOut<dim, spacedim> embedded_out;

@@ -51,6 +51,9 @@ double compute_l2_norm_matrix(const SparseMatrix<double>& C,
 template <typename MatrixType>
 void export_to_matlab_csv(const MatrixType& matrix,
                           const std::string& filename) {
+  if (matrix.m() > 1e3 || matrix.n() > 1e3) {
+    return;
+  }
   std::ofstream out(filename);
   out.precision(16);  // Use high precision for the values
 
@@ -69,6 +72,9 @@ void export_to_matlab_csv(const MatrixType& matrix,
 
 void export_sparse_to_matlab_csv(const dealii::SparseMatrix<double>& matrix,
                                  const std::string& filename) {
+  if (matrix.m() > 1e3 || matrix.n() > 1e3) {
+    return;
+  }
   std::ofstream out(filename);
 
   if (!out.is_open()) {
@@ -307,6 +313,7 @@ void build_AMG_augmented_block(
   // #endif
 
   export_to_matlab_csv(augmented_block, "augmented_matrix_stokes.csv");
+  export_sparse_to_matlab_csv(augmented_block, "augmented_matrix_stokes.txt");
 }
 
 #endif
