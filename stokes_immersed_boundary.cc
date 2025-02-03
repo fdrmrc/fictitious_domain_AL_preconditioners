@@ -326,15 +326,15 @@ IBStokesProblem<dim, spacedim>::IBStokesProblem(const Parameters &parameters)
       pcout(std::cout, (Utilities::MPI::this_mpi_process(mpi_comm) == 0)),
       monitor(pcout, TimerOutput::summary, TimerOutput::wall_times) {
   embedded_value_function.declare_parameters_call_back.connect([]() -> void {
-    ParameterAcceptor::prm.set("Function expression", "1; 1");
+    ParameterAcceptor::prm.set("Function expression", "1; 1; 1");
   });
 
   dirichlet_bc_function.declare_parameters_call_back.connect([]() -> void {
-    ParameterAcceptor::prm.set("Function expression", "0;0;0");
+    ParameterAcceptor::prm.set("Function expression", "0;0;0;0");
   });
 
   body_force_function.declare_parameters_call_back.connect([]() -> void {
-    ParameterAcceptor::prm.set("Function expression", "0;0");
+    ParameterAcceptor::prm.set("Function expression", "0;0;0");
   });
 
   outer_solver_control.declare_parameters_call_back.connect([]() -> void {
@@ -910,58 +910,10 @@ void IBStokesProblem<dim, spacedim>::solve() {
       LinearOperatorImplementation::TrilinosPayload;
   if (std::strcmp(parameters.solver.c_str(), "IBStokes") == 0) {
     // Immersed boundary, **without preconditioner**
-    // Extract blocks from Stokes
+    AssertThrow(false,
+                ExcNotImplemented("This program is not supposed to use "
+                                  "unpreconditioned version. Aborting."));
 
-    auto A = linear_operator<TrilinosWrappers::MPI::Vector,
-                             TrilinosWrappers::MPI::Vector, PayloadType>(
-        stokes_matrix.block(0, 0));
-    auto Bt = linear_operator<TrilinosWrappers::MPI::Vector,
-                              TrilinosWrappers::MPI::Vector, PayloadType>(
-        stokes_matrix.block(0, 1));
-    auto B = linear_operator<TrilinosWrappers::MPI::Vector,
-                             TrilinosWrappers::MPI::Vector, PayloadType>(
-        stokes_matrix.block(1, 0));
-    auto Ct = linear_operator<TrilinosWrappers::MPI::Vector,
-                              TrilinosWrappers::MPI::Vector, PayloadType>(
-        coupling_matrix);
-    auto C = transpose_operator(Ct);
-
-    // SparseDirectUMFPACK A_inv_umfpack;
-    // A_inv_umfpack.initialize(stokes_matrix.block(0, 0));
-    TrilinosWrappers::PreconditionILU A_inv_direct;
-    A_inv_direct.initialize(stokes_matrix.block(0, 0));
-    auto A_inv = linear_operator<TrilinosWrappers::MPI::Vector,
-                                 TrilinosWrappers::MPI::Vector, PayloadType>(
-        stokes_matrix.block(0, 0), A_inv_direct);
-
-    // Define inverse operators
-
-    SolverControl solver_control(100 * solution.block(1).size(), 1e-10, false,
-                                 false);
-    SolverCG<TrilinosWrappers::MPI::Vector> cg_solver(solver_control);
-    auto SBB = B * A_inv * Bt;
-    auto SBC = B * A_inv * Ct;
-    auto SCB = C * A_inv * Bt;
-    auto SCC = C * A_inv * Ct;
-
-    TrilinosWrappers::PreconditionIdentity prec_id;
-    auto SBB_inv = inverse_operator(SBB, cg_solver, prec_id);
-    auto S_lambda = SCC - SCB * SBB_inv * SBC;
-    auto S_lambda_inv = inverse_operator(S_lambda, cg_solver, prec_id);
-
-    auto A_inv_f = A_inv * stokes_rhs.block(0);
-    lambda = S_lambda_inv *
-             (C * A_inv_f - embedded_rhs - SCB * SBB_inv * B * A_inv_f);
-    pcout << "Computed multiplier" << std::endl;
-
-    auto &p = solution.block(1);
-    p = SBB_inv * (B * A_inv_f - SBC * lambda);
-    constraints.distribute(solution);
-    pcout << "Computed pressure" << std::endl;
-    auto &u = solution.block(0);
-    u = A_inv * (stokes_rhs.block(0) - Bt * solution.block(1) - Ct * lambda);
-    constraints.distribute(solution);
-    pcout << "Computed velocity" << std::endl;
   } else if (std::strcmp(parameters.solver.c_str(), "IBStokesAL") == 0) {
     // Immersed boundary, with Augmented Lagrangian preconditioner
 
@@ -1025,11 +977,12 @@ void IBStokesProblem<dim, spacedim>::solve() {
     pcout << "gamma (Grad-div): " << gamma_grad_div << std::endl;
     pcout << "gamma (AL): " << gamma << std::endl;
     auto Aug = null_operator(A);
-    if (augmented_lagrangian_control.grad_div_stabilization)
+    if (augmented_lagrangian_control.grad_div_stabilization) {
       Aug = linear_operator<TrilinosWrappers::MPI::Vector,
                             TrilinosWrappers::MPI::Vector, PayloadType>(
           augmented_matrix);
-    else
+      Aug = A + gamma * Ct * invW * C;
+    } else
       Aug = A + gamma * Ct * invW * C;  // no preconditioner will be employed.
 
     // We define the block operator in the standard way...
@@ -1250,7 +1203,8 @@ int main(int argc, char **argv) {
     using namespace dealii;
     using namespace IBStokes;
 
-    const unsigned int dim = 1, spacedim = 2;
+    // const unsigned int dim = 1, spacedim = 2;
+    const unsigned int dim = 2, spacedim = 3;
 
     IBStokesProblem<dim, spacedim>::Parameters parameters;
     IBStokesProblem<dim, spacedim> problem(parameters);
