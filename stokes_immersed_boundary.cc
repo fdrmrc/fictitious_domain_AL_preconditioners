@@ -361,20 +361,21 @@ IBStokesProblem<dim, spacedim>::IBStokesProblem(const Parameters &parameters)
       []() -> void {
         ParameterAcceptor::prm.set("Function constants", "R=.21, Cx=.5,Cy=.5");
 
-        ParameterAcceptor::prm.set("Function expression",
-                                   "R*cos(2*pi*x)+Cx; R*sin(2*pi*x)+Cy");
+        ParameterAcceptor::prm.set(
+            "Function expression",
+            "R*cos(2*pi*x)+Cx; R*sin(2*pi*x)+Cy; R*sin(2*pi*x)+Cy");
       });
 
   embedded_value_function.declare_parameters_call_back.connect([]() -> void {
-    ParameterAcceptor::prm.set("Function expression", "1; 1");
+    ParameterAcceptor::prm.set("Function expression", "1; 1;0");
   });
 
   dirichlet_bc_function.declare_parameters_call_back.connect([]() -> void {
-    ParameterAcceptor::prm.set("Function expression", "0;0;0");
+    ParameterAcceptor::prm.set("Function expression", "0;0;0;0");
   });
 
   body_force_function.declare_parameters_call_back.connect([]() -> void {
-    ParameterAcceptor::prm.set("Function expression", "0;0");
+    ParameterAcceptor::prm.set("Function expression", "0;0;0");
   });
 
   outer_solver_control.declare_parameters_call_back.connect([]() -> void {
@@ -408,6 +409,7 @@ void IBStokesProblem<dim, spacedim>::setup_grids_and_dofs() {
 
   space_grid = std::make_unique<Triangulation<spacedim>>();
 
+  // GridGenerator::hyper_cube(*space_grid, -1., 1, true);
   GridGenerator::hyper_cube(*space_grid, 0., 1, true);
 
   space_grid->refine_global(parameters.initial_refinement);
@@ -415,8 +417,18 @@ void IBStokesProblem<dim, spacedim>::setup_grids_and_dofs() {
       std::make_unique<GridTools::Cache<spacedim, spacedim>>(*space_grid);
 
   embedded_grid = std::make_unique<Triangulation<dim, spacedim>>();
-  GridGenerator::hyper_cube(*embedded_grid);
+  // GridGenerator::hyper_cube(*embedded_grid);
+  GridGenerator::hyper_sphere(*embedded_grid, {0.5, 0.5, 0.5}, 0.1);
+  // GridGenerator::torus(*embedded_grid, 0.3, 0.1);
   embedded_grid->refine_global(parameters.initial_embedded_refinement);
+  if constexpr (spacedim == 3) {
+    if (embedded_grid->n_active_cells() < 1e3) {
+      GridOut go;
+      std::ofstream out_name("torus.vtk");
+      go.write_vtk(*embedded_grid, out_name);
+      std::cout << "Exported embedded grid" << std::endl;
+    }
+  }
 
   embedded_configuration_fe = std::make_unique<FESystem<dim, spacedim>>(
       FE_Q<dim, spacedim>(
@@ -429,13 +441,17 @@ void IBStokesProblem<dim, spacedim>::setup_grids_and_dofs() {
   embedded_configuration_dh->distribute_dofs(*embedded_configuration_fe);
   embedded_configuration.reinit(embedded_configuration_dh->n_dofs());
 
-  VectorTools::interpolate(*embedded_configuration_dh,
-                           embedded_configuration_function,
-                           embedded_configuration);
+  if constexpr (spacedim == 2)
+    VectorTools::interpolate(*embedded_configuration_dh,
+                             embedded_configuration_function,
+                             embedded_configuration);
 
-  embedded_mapping =
-      std::make_unique<MappingFEField<dim, spacedim, Vector<double>>>(
-          *embedded_configuration_dh, embedded_configuration);
+  if constexpr (spacedim == 2)
+    embedded_mapping =
+        std::make_unique<MappingFEField<dim, spacedim, Vector<double>>>(
+            *embedded_configuration_dh, embedded_configuration);
+  else if constexpr (spacedim == 3)
+    embedded_mapping = std::make_unique<MappingQ1<dim, spacedim>>();
 
   setup_embedded_dofs();
 
@@ -469,12 +485,13 @@ void IBStokesProblem<dim, spacedim>::setup_grids_and_dofs() {
           << embedded_space_maximal_diameter / background_space_minimal_diameter
           << std::endl;
 
-  AssertThrow(
-      embedded_space_maximal_diameter < background_space_minimal_diameter,
-      ExcMessage("The background grid is too refined (or the embedded grid "
-                 "is too coarse). Adjust the parameters so that the minimal"
-                 "grid size of the background grid is larger "
-                 "than the maximal grid size of the embedded grid."));
+  if constexpr (spacedim == 2)
+    AssertThrow(
+        embedded_space_maximal_diameter < background_space_minimal_diameter,
+        ExcMessage("The background grid is too refined (or the embedded grid "
+                   "is too coarse). Adjust the parameters so that the minimal"
+                   "grid size of the background grid is larger "
+                   "than the maximal grid size of the embedded grid."));
 
   setup_background_dofs();
 }
@@ -895,14 +912,30 @@ void IBStokesProblem<dim, spacedim>::solve() {
     auto Mp_inv = null_operator(Mp);
     DiagonalMatrix<Vector<double>> diag_inverse_pressure_matrix;
     SparseDirectUMFPACK Mp_inv_umfpack;
+    SolverControl control_mass(100, 1e-6, false, false);
+    SolverCG<Vector<double>> solver_cg_mass_p(control_mass);
     if (augmented_lagrangian_control.inverse_diag_square) {
       const unsigned int n_cols_Mp = preconditioner_matrix.block(1, 1).m();
       Vector<double> pressure_diagonal_inv(n_cols_Mp);
-      for (types::global_dof_index i = 0; i < n_cols_Mp; ++i)
-        pressure_diagonal_inv(i) =
-            1. / preconditioner_matrix.block(1, 1).diag_element(i);
+      // for (types::global_dof_index i = 0; i < n_cols_Mp; ++i)
+      //   pressure_diagonal_inv(i) =
+      //       1. / preconditioner_matrix.block(1, 1).diag_element(i);
+      // diag_inverse_pressure_matrix.reinit(pressure_diagonal_inv);
+      // Mp_inv = linear_operator(diag_inverse_pressure_matrix);
+
+      // Try with mass lumping
+      Vector<double> ones(n_cols_Mp);
+      ones = 1.;
+      preconditioner_matrix.block(1, 1).vmult(pressure_diagonal_inv,
+                                              ones);  // M_p*1
+
+      for (double &x : pressure_diagonal_inv) x = 1. / x;
+
       diag_inverse_pressure_matrix.reinit(pressure_diagonal_inv);
-      Mp_inv = linear_operator(diag_inverse_pressure_matrix);
+      // Mp_inv = linear_operator(diag_inverse_pressure_matrix);
+      Mp_inv =
+          inverse_operator(Mp, solver_cg_mass_p, diag_inverse_pressure_matrix);
+
     } else {
       Mp_inv_umfpack.initialize(preconditioner_matrix.block(1, 1));
       Mp_inv =
@@ -911,10 +944,15 @@ void IBStokesProblem<dim, spacedim>::solve() {
 
     const auto Zero = M * 0.0;
     SparseDirectUMFPACK M_immersed_inv_umfpack;
-    M_immersed_inv_umfpack.initialize(mass_matrix_immersed);
+    if (augmented_lagrangian_control.inverse_diag_square == false)
+      M_immersed_inv_umfpack.initialize(mass_matrix_immersed);
 
     auto invW = null_operator(M);
     Vector<double> inverse_squares(mass_matrix_immersed.m());
+    // Vector<double> ones(mass_matrix_immersed.m());
+    // ones = 1.;
+    // mass_matrix_immersed.vmult(inverse_squares, ones);
+    // for (double &x : inverse_squares) x = 1. / (x * x);
     for (types::global_dof_index i = 0; i < mass_matrix_immersed.m(); ++i)
       inverse_squares(i) = 1. / (mass_matrix_immersed.diag_element(i) *
                                  mass_matrix_immersed.diag_element(i));
@@ -968,6 +1006,7 @@ void IBStokesProblem<dim, spacedim>::solve() {
     auto Aug_inv = null_operator(A);
     TrilinosWrappers::PreconditionAMG
         prec_amg_aug;  // will be initialized only if selected
+
     if (augmented_lagrangian_control.AMG_preconditioner_augmented == true &&
         augmented_lagrangian_control.grad_div_stabilization == true) {
       Vector<double> inverse_squares_multiplier(
@@ -1144,7 +1183,8 @@ int main(int argc, char **argv) {
     using namespace dealii;
     using namespace IBStokes;
 
-    const unsigned int dim = 1, spacedim = 2;
+    // const unsigned int dim = 1, spacedim = 2;
+    const unsigned int dim = 2, spacedim = 3;
 
     IBStokesProblem<dim, spacedim>::Parameters parameters;
     IBStokesProblem<dim, spacedim> problem(parameters);
