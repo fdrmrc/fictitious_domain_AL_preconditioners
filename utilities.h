@@ -1229,8 +1229,10 @@ void create_augmented_block(
             for (unsigned int i = 0; i < dofs_per_cell; ++i) {
               for (unsigned int j = 0; j <= i; ++j)
                 cell_matrix(i, j) +=
-                    (scalar_product(grad_phi_u[i], grad_phi_u[j]) +
-                     gamma * div_phi_u[i] * div_phi_u[j]) *
+                    (scalar_product(grad_phi_u[i],
+                                    grad_phi_u[j])  // symgrad-symgrad
+                     + gamma * div_phi_u[i] *
+                           div_phi_u[j]) *  // grad-div stabilization
                     fe_values.JxW(q_point);
             }
           }
@@ -1284,12 +1286,11 @@ void create_augmented_block(
     // Compute (C^T * diag(v)) * C
     Epetra_CrsMatrix *temp2 = new Epetra_CrsMatrix(Copy, temp1->RowMap(), 0);
     EpetraExt::MatrixMatrix::Multiply(*temp1, false, C_trilinos, false, *temp2);
-    temp2->Scale(gamma);
 
-    // Add A to the result
+    // Add A to the result, scaling with gamma
     Epetra_CrsMatrix *result = new Epetra_CrsMatrix(Copy, A_trilinos.RowMap(),
                                                     A_trilinos.MaxNumEntries());
-    EpetraExt::MatrixMatrix::Add(A_trilinos, false, 1.0, *temp2, false, 1.0,
+    EpetraExt::MatrixMatrix::Add(A_trilinos, false, 1.0, *temp2, false, gamma,
                                  result);
     result->FillComplete();
 
@@ -1319,6 +1320,34 @@ void create_augmented_block(
   (void)gamma;
   (void)augmented_matrix;
 #endif
+}
+
+bool are_transpose(const dealii::TrilinosWrappers::SparseMatrix &A,
+                   const dealii::TrilinosWrappers::SparseMatrix &B) {
+  // Ensure the dimensions match the transpose requirement
+  if (A.m() != B.n() || A.n() != B.m()) return false;
+
+  // Iterate through nonzero entries of A and check against B
+  for (auto it = A.begin(); it != A.end(); ++it) {
+    const unsigned int i = it->row();
+    const unsigned int j = it->column();
+    const double valueA = it->value();
+
+    // Check if B(j, i) matches A(i, j)
+    if (std::fabs(B.el(j, i) - valueA) > 1e-12) return false;
+  }
+
+  // Ensure B does not have extra nonzeros that are not in A
+  for (auto it = B.begin(); it != B.end(); ++it) {
+    const unsigned int i = it->row();
+    const unsigned int j = it->column();
+    const double valueB = it->value();
+
+    // A(j, i) should match B(i, j), and should have been checked earlier
+    if (A.el(j, i) != valueB) return false;
+  }
+
+  return true;
 }
 
 bool checkFullRank(const Epetra_CrsMatrix &C, const Epetra_CrsMatrix &CT,

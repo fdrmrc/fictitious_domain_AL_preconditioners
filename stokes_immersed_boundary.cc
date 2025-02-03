@@ -522,22 +522,23 @@ void IBStokesProblem<dim, spacedim>::setup_background_dofs() {
   }
   constraints.close();
 
-  const IndexSet &velocity_locally_owned_index_set =
-      velocity_dh->locally_owned_dofs();
-  const IndexSet velocity_locally_relevant_set =
-      DoFTools::extract_locally_relevant_dofs(*velocity_dh);
-  {
-    constraints_velocity.clear();
-    constraints_velocity.reinit(velocity_locally_owned_index_set,
-                                velocity_locally_relevant_set);
+  // const IndexSet &velocity_locally_owned_index_set =
+  //     velocity_dh->locally_owned_dofs();
+  // const IndexSet velocity_locally_relevant_set =
+  //     DoFTools::extract_locally_relevant_dofs(*velocity_dh);
+  // {
+  //   constraints_velocity.clear();
+  //   constraints_velocity.reinit(velocity_locally_owned_index_set,
+  //                               velocity_locally_relevant_set);
 
-    DoFTools::make_hanging_node_constraints(*velocity_dh, constraints_velocity);
-    for (const unsigned int id : parameters.dirichlet_ids)
-      VectorTools::interpolate_boundary_values(
-          *velocity_dh, id, Functions::ZeroFunction<spacedim>(spacedim),
-          constraints_velocity);
-  }
-  constraints_velocity.close();
+  //   DoFTools::make_hanging_node_constraints(*velocity_dh,
+  //   constraints_velocity); for (const unsigned int id :
+  //   parameters.dirichlet_ids)
+  //     VectorTools::interpolate_boundary_values(
+  //         *velocity_dh, id, Functions::ZeroFunction<spacedim>(spacedim),
+  //         constraints_velocity);
+  // }
+  // constraints_velocity.close();
 
   stokes_partitioning.push_back(
       stokes_locally_owned_index_set.get_view(0, n_u));
@@ -784,6 +785,10 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
     coupling_matrix.compress(VectorOperation::add);
     coupling_matrix_t.compress(VectorOperation::add);
 
+    pcout << "Check if they are really transpose: " << std::boolalpha
+          << UtilitiesAL::are_transpose(coupling_matrix, coupling_matrix_t)
+          << std::endl;
+
     MatrixTools::create_mass_matrix(*embedded_mapping, *embedded_dh,
                                     QGauss<dim>(2 * embedded_fe->degree + 1),
                                     mass_matrix_immersed);
@@ -853,7 +858,6 @@ void IBStokesProblem<dim, spacedim>::assemble_preconditioner() {
 
   // Multiplier mass matrix
   {
-    TrilinosWrappers::MPI::Vector inverse_squares;
     TrilinosWrappers::SparsityPattern diag_inverse_square_sparsity(
         embedded_locally_owned_dofs, mpi_comm);
     for (auto dof : embedded_locally_owned_dofs) {
@@ -862,6 +866,7 @@ void IBStokesProblem<dim, spacedim>::assemble_preconditioner() {
     diag_inverse_square_sparsity.compress();
     diag_inverse_square_trilinos.reinit(diag_inverse_square_sparsity);
 
+    TrilinosWrappers::MPI::Vector inverse_squares;
     inverse_squares.reinit(embedded_locally_owned_dofs, mpi_comm);
     for (const types::global_dof_index local_idx : embedded_locally_owned_dofs)
       inverse_squares(local_idx) =
@@ -891,7 +896,7 @@ void IBStokesProblem<dim, spacedim>::assemble_preconditioner() {
     pcout << "Computing augmented block..." << std::endl;
     UtilitiesAL::create_augmented_block(
         *velocity_dh, coupling_matrix_t, coupling_matrix,
-        inverse_squares_multiplier, constraints_velocity,
+        inverse_squares_multiplier, constraints,
         augmented_lagrangian_control.gamma, augmented_matrix);
     pcout << "Assembled augmented block." << std::endl;
   }
@@ -1203,8 +1208,8 @@ int main(int argc, char **argv) {
     using namespace dealii;
     using namespace IBStokes;
 
-    // const unsigned int dim = 1, spacedim = 2;
-    const unsigned int dim = 2, spacedim = 3;
+    const unsigned int dim = 1, spacedim = 2;
+    // const unsigned int dim = 2, spacedim = 3;
 
     IBStokesProblem<dim, spacedim>::Parameters parameters;
     IBStokesProblem<dim, spacedim> problem(parameters);
