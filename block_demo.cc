@@ -17,6 +17,7 @@
 #include <deal.II/grid/grid_out.h>
 #include <deal.II/grid/grid_tools.h>
 #include <deal.II/grid/grid_tools_cache.h>
+#include <deal.II/grid/grid_tools_geometry.h>
 #include <deal.II/grid/tria.h>
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/diagonal_matrix.h>
@@ -760,18 +761,19 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     auto M3_inv = linear_operator(lumped_mass_matrix_inv);
 
     IterationNumberControl c_ct_solver_control(40, 1e-12, false, false);
-    auto C_Ct2 = C * M2_inv * Ct;
+    auto C_Ct2 = C * Ct;
     SolverCG<Vector<double>> solver_cg_c_ct(c_ct_solver_control);
     auto C_Ct2_inv =
         inverse_operator(C_Ct2, solver_cg_c_ct, PreconditionIdentity());
 
-    auto C_Ct1 = C * M1_inv * Ct;
+    auto C_Ct1 = C * Ct;
     auto C_Ct1_inv =
         inverse_operator(C_Ct1, solver_cg_c_ct, PreconditionIdentity());
 
     auto K_inv = linear_operator(K, K_inv_umfpack);
 
-    auto S_inv = C_Ct2_inv * C * M2_inv * K * M2_inv * Ct * C_Ct2_inv;
+    // auto S_inv = C_Ct2_inv * C * M2_inv * K * M2_inv * Ct * C_Ct2_inv;
+    auto S_inv = C_Ct2_inv * C * K * Ct * C_Ct2_inv;
 
     // auto S_inv = M3_inv * C * M2_inv * K * M2_inv * Ct * M3_inv;
 
@@ -966,7 +968,8 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
 
     // IdentityMatrix W(mass_matrix.m());
     // auto invW = linear_operator(W);
-    const double gamma = 1;
+    const double gamma = 10;
+    export_to_matlab_csv(stiffness_matrix, "A.csv");
 #ifdef DEAL_II_WITH_TRILINOS
 
     // Construct explicitely vector storing M^{-2}
@@ -1103,8 +1106,21 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
 #endif
 #endif
 
-    auto invW1 = linear_operator(mass_matrix, M_inv_umfpack);
-    auto invW = invW1 * invW1;
+    // auto invW1 = linear_operator(mass_matrix, M_inv_umfpack);
+    // auto invW = invW1 * invW1;
+    Vector<double> inv_squares(mass_matrix.m());
+    for (unsigned int i = 0; i < mass_matrix.m(); ++i)
+      inv_squares[i] =
+          1. / (mass_matrix.diag_element(i) * mass_matrix.diag_element(i));
+
+    DiagonalMatrix<Vector<double>> diag_matrix(inv_squares);
+    auto invW = linear_operator(diag_matrix);
+
+    // const double h_gamma =
+    //     GridTools::minimal_cell_diameter(*embedded_grid, *embedded_mapping);
+    // std::cout << "h_gamma = " << h_gamma << std::endl;
+
+    // auto invW = 1. / (h_gamma * h_gamma) * invW1;
     auto Aug = K + gamma * Ct * invW * C;
 
     deallog << "gamma: " << gamma << std::endl;
@@ -1160,6 +1176,7 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     }
 
     export_to_matlab_csv(W, "W.csv");
+    export_to_matlab_csv(mass_matrix, "M.csv");
 
     solver_fgmres.solve(AA, solution_block, system_rhs_block,
                         augmented_lagrangian_preconditioner);
