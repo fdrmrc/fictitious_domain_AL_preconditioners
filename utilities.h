@@ -164,9 +164,8 @@ void build_AMG_augmented_block(
       coupling_t.set(i, transpose_matrix->GCID(indices[j]), values[j]);
     }
   }
-#ifdef DEBUG
+
   std::cout << "Populated the transpose matrix" << std::endl;
-#endif
 
   // Now, perform matmat multiplication
   const auto& space_fe = velocity_dh.get_fe();
@@ -284,9 +283,11 @@ void build_AMG_augmented_block(
     }
   }
 
+  std::cout << "assembled" << std::endl;
   augmented_block.reinit(stiffness_matrix_copy);
   augmented_block.copy_from(stiffness_matrix_copy);
   augmented_block.add(gamma, BtWinvB);
+  std::cout << "Created augmented block" << std::endl;
 
   //!
   const FEValuesExtractors::Vector velocity_components(0);
@@ -295,11 +296,13 @@ void build_AMG_augmented_block(
           space_dh, space_dh.get_fe().component_mask(velocity_components));
   TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
   amg_data.constant_modes = constant_modes;
-  amg_data.elliptic = true;
+  // amg_data.elliptic = true;
   amg_data.higher_order_elements = true;
   amg_data.smoother_sweeps = 2;
+  amg_data.output_details = 10;  // Maximum verbosity
   amg_data.aggregation_threshold = 0.02;
 
+  std::cout << "Before initializing AMG" << std::endl;
   amg_prec.initialize(augmented_block, amg_data);                 //!
   auto prec_for_cg = linear_operator(augmented_block, amg_prec);  //!
   dealii::deallog << "Initialized AMG preconditioner for augmented block"
