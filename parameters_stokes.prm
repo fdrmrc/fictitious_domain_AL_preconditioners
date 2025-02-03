@@ -3,10 +3,9 @@
 subsection Distributed Lagrange<1,2>
 set Coupling quadrature order                    = 3
 set Dirichlet boundary ids                       = 0, 1, 2, 3
-set Embedded configuration finite element degree = 1
 set Embedded space finite element degree         = 1
-set Initial embedded space refinement            = 8
-set Initial background space refinement          = 7
+set Initial embedded space refinement            = 9
+set Initial background space refinement          = 8
 set Local refinements steps near embedded domain = 1
 set Solver                                       = IBStokesAL
 set Velocity space finite element degree         = 2
