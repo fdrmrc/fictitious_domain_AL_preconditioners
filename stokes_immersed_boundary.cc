@@ -886,10 +886,15 @@ void IBStokesProblem<dim, spacedim>::assemble_preconditioner() {
     inverse_squares_multiplier.reinit(embedded_locally_owned_dofs, mpi_comm);
 
     // for (types::global_dof_index i = 0; i < mass_matrix_immersed.m(); ++i)
-    for (const types::global_dof_index local_idx : embedded_locally_owned_dofs)
+    for (const types::global_dof_index local_idx :
+         embedded_locally_owned_dofs) {
       inverse_squares_multiplier(local_idx) =
           1. / (mass_matrix_immersed.diag_element(local_idx) *
                 mass_matrix_immersed.diag_element(local_idx));
+
+      // std::cout << "Stored value at row " << local_idx << ": "
+      //           << inverse_squares_multiplier(local_idx) << std::endl;
+    }
 
     inverse_squares_multiplier.compress(VectorOperation::insert);
 
@@ -922,6 +927,13 @@ void IBStokesProblem<dim, spacedim>::solve() {
   } else if (std::strcmp(parameters.solver.c_str(), "IBStokesAL") == 0) {
     // Immersed boundary, with Augmented Lagrangian preconditioner
 
+    TrilinosWrappers::MPI::Vector v, dst;
+    v.reinit(velocity_dh->locally_owned_dofs());
+    v = 1.4;
+    dst.reinit(velocity_dh->locally_owned_dofs());
+    stokes_matrix.block(0, 0).vmult(dst, v);
+    std::cout << "Norm: " << dst.l2_norm() << std::endl;
+
     // As before, extract blocks from Stokes
     auto A = linear_operator<TrilinosWrappers::MPI::Vector,
                              TrilinosWrappers::MPI::Vector, PayloadType>(
@@ -936,9 +948,10 @@ void IBStokesProblem<dim, spacedim>::solve() {
     auto Ct = linear_operator<TrilinosWrappers::MPI::Vector,
                               TrilinosWrappers::MPI::Vector, PayloadType>(
         coupling_matrix);
-    auto C = linear_operator<TrilinosWrappers::MPI::Vector,
-                             TrilinosWrappers::MPI::Vector, PayloadType>(
-        coupling_matrix_t);
+    // auto C = linear_operator<TrilinosWrappers::MPI::Vector,
+    //                          TrilinosWrappers::MPI::Vector, PayloadType>(
+    //     coupling_matrix_t);
+    auto C = transpose_operator(Ct);
 
     auto M = linear_operator<TrilinosWrappers::MPI::Vector,
                              TrilinosWrappers::MPI::Vector, PayloadType>(
@@ -983,9 +996,9 @@ void IBStokesProblem<dim, spacedim>::solve() {
     pcout << "gamma (AL): " << gamma << std::endl;
     auto Aug = null_operator(A);
     if (augmented_lagrangian_control.grad_div_stabilization) {
-      Aug = linear_operator<TrilinosWrappers::MPI::Vector,
-                            TrilinosWrappers::MPI::Vector, PayloadType>(
-          augmented_matrix);
+      // Aug = linear_operator<TrilinosWrappers::MPI::Vector,
+      //                       TrilinosWrappers::MPI::Vector, PayloadType>(
+      //     augmented_matrix);
       Aug = A + gamma * Ct * invW * C;
     } else
       Aug = A + gamma * Ct * invW * C;  // no preconditioner will be employed.
@@ -1208,8 +1221,8 @@ int main(int argc, char **argv) {
     using namespace dealii;
     using namespace IBStokes;
 
-    const unsigned int dim = 1, spacedim = 2;
-    // const unsigned int dim = 2, spacedim = 3;
+    // const unsigned int dim = 1, spacedim = 2;
+    const unsigned int dim = 2, spacedim = 3;
 
     IBStokesProblem<dim, spacedim>::Parameters parameters;
     IBStokesProblem<dim, spacedim> problem(parameters);

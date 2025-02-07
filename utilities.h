@@ -1199,7 +1199,7 @@ void create_augmented_block(
     const auto &space_fe = velocity_dh.get_fe();
 
     {
-      const QGauss<spacedim> quadrature_formula(2 * space_fe.degree + 1);
+      const QGauss<spacedim> quadrature_formula(space_fe.degree + 2);
       FEValues<spacedim> fe_values(space_fe, quadrature_formula,
                                    update_values | update_gradients |
                                        update_quadrature_points |
@@ -1219,21 +1219,21 @@ void create_augmented_block(
           fe_values.reinit(cell);
 
           cell_matrix = 0.;
-
-          for (unsigned int q_point = 0; q_point < n_q_points; ++q_point) {
+          for (unsigned int q = 0; q < n_q_points; ++q) {
             for (unsigned int k = 0; k < dofs_per_cell; ++k) {
-              grad_phi_u[k] = fe_values[velocities].gradient(k, q_point);
-              div_phi_u[k] = fe_values[velocities].divergence(k, q_point);
+              grad_phi_u[k] = fe_values[velocities].gradient(k, q);
+              div_phi_u[k] = fe_values[velocities].divergence(k, q);
             }
 
             for (unsigned int i = 0; i < dofs_per_cell; ++i) {
-              for (unsigned int j = 0; j <= i; ++j)
+              for (unsigned int j = 0; j <= i; ++j) {
                 cell_matrix(i, j) +=
-                    (scalar_product(grad_phi_u[i],
-                                    grad_phi_u[j])  // symgrad-symgrad
+                    (1. * scalar_product(grad_phi_u[i],
+                                         grad_phi_u[j])  // symgrad-symgrad
                      + gamma * div_phi_u[i] *
                            div_phi_u[j]) *  // grad-div stabilization
-                    fe_values.JxW(q_point);
+                    fe_values.JxW(q);
+              }
             }
           }
 
@@ -1246,9 +1246,15 @@ void create_augmented_block(
           velocity_constraints.distribute_local_to_global(
               cell_matrix, local_dof_indices, velocity_block);
         }
-
       velocity_block.compress(VectorOperation::add);
     }
+
+    TrilinosWrappers::MPI::Vector v, dst;
+    v.reinit(velocity_dh.locally_owned_dofs());
+    v = 1.4;
+    dst.reinit(velocity_dh.locally_owned_dofs());
+    velocity_block.vmult(dst, v);
+    std::cout << "Norm: " << dst.l2_norm() << std::endl;
 
     // Extract Trilinos types
     Epetra_CrsMatrix A_trilinos = velocity_block.trilinos_matrix();
@@ -1277,29 +1283,60 @@ void create_augmented_block(
     }
     diag_matrix.FillComplete();
 
-    // Compute C^T * diag(v)
-    Epetra_CrsMatrix *temp1 =
-        new Epetra_CrsMatrix(Copy, Ct_trilinos.RowMap(), 0);
-    EpetraExt::MatrixMatrix::Multiply(Ct_trilinos, false, diag_matrix, false,
-                                      *temp1);
+    // // Compute C^T * diag(v)
+    // Epetra_CrsMatrix *temp1 =
+    //     new Epetra_CrsMatrix(Copy, Ct_trilinos.RowMap(), 0);
+    // EpetraExt::MatrixMatrix::Multiply(Ct_trilinos, false, diag_matrix, false,
+    //                                   *temp1);
 
-    // Compute (C^T * diag(v)) * C
-    Epetra_CrsMatrix *temp2 = new Epetra_CrsMatrix(Copy, temp1->RowMap(), 0);
-    EpetraExt::MatrixMatrix::Multiply(*temp1, false, C_trilinos, false, *temp2);
+    // // Compute (C^T * diag(v)) * C
+    // Epetra_CrsMatrix *temp2 = new Epetra_CrsMatrix(Copy, temp1->RowMap(), 0);
+    // EpetraExt::MatrixMatrix::Multiply(*temp1, false, C_trilinos, false,
+    // *temp2);
+
+    // // Add A to the result, scaling with gamma
+    // Epetra_CrsMatrix *result = new Epetra_CrsMatrix(Copy,
+    // A_trilinos.RowMap(),
+    //                                                 A_trilinos.MaxNumEntries());
+    // EpetraExt::MatrixMatrix::Add(A_trilinos, false, 1.0, *temp2, false,
+    // gamma,
+    //                              result);
+    // result->FillComplete();
+
+    // Finally, initialize the Trilinos matrix
+    // augmented_matrix.reinit(*result, true /*copy_values*/);
+    // delete temp1;
+    // delete temp2;
+    // delete result;
+
+    // Compute W = C^T * diag(V)
+    Epetra_CrsMatrix *W = new Epetra_CrsMatrix(Copy, Ct_trilinos.RowMap(), 0);
+    EpetraExt::MatrixMatrix::Multiply(Ct_trilinos, false, diag_matrix, false,
+                                      *W);
+    std::cout << "Done first" << std::endl;
+
+    // Compute Ct^T * W, which is equivalent to (C^T * diag(V)) * C
+    Epetra_CrsMatrix *CtT_W = new Epetra_CrsMatrix(Copy, W->RangeMap(), 0);
+    EpetraExt::MatrixMatrix::Multiply(*W, false /* transpose */, Ct_trilinos,
+                                      true, *CtT_W);
+    std::cout << "Done second" << std::endl;
 
     // Add A to the result, scaling with gamma
     Epetra_CrsMatrix *result = new Epetra_CrsMatrix(Copy, A_trilinos.RowMap(),
                                                     A_trilinos.MaxNumEntries());
-    EpetraExt::MatrixMatrix::Add(A_trilinos, false, 1.0, *temp2, false, gamma,
+    EpetraExt::MatrixMatrix::Add(A_trilinos, false, 1.0, *CtT_W, false, gamma,
                                  result);
+    std::cout << "Done addition" << std::endl;
     result->FillComplete();
 
-    // Finally, initialize the Trilinos matrix
-    augmented_matrix.reinit(*result, true);
+    // Initialize the final Trilinos matrix
+    std::cout << "Before initializing Trilinos matrix" << std::endl;
+    augmented_matrix.reinit(*result, true /*copy_values*/);
+    std::cout << "Initialized Trilinos matrix" << std::endl;
 
     // Delete unnecessary objects.
-    delete temp1;
-    delete temp2;
+    delete W;
+    delete CtT_W;
     delete result;
 
   } else {
