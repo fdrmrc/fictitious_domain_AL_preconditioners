@@ -9,7 +9,7 @@ set Initial embedded space refinement            = 7
 set Initial background space refinement          = 6
 set Local refinements steps near embedded domain = 1
 set Solver                                       = IBStokesAL
-set Use discontinuous pressure                   = true
+set Use discontinuous pressure                   = false
 set Velocity space finite element degree         = 2
 set Verbosity level                              = 10
 
