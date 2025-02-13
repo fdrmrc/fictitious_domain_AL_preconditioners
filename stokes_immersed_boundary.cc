@@ -919,9 +919,9 @@ void IBStokesProblem<dim, spacedim>::assemble_preconditioner() {
 
     pcout << "Computing augmented block..." << std::endl;
     UtilitiesAL::create_augmented_block(
-        *velocity_dh, coupling_matrix_t, coupling_matrix,
-        inverse_squares_multiplier, constraints,
-        augmented_lagrangian_control.gamma, augmented_matrix);
+        stokes_matrix.block(0, 0), coupling_matrix_t, coupling_matrix,
+        inverse_squares_multiplier, augmented_lagrangian_control.gamma,
+        augmented_matrix);
     pcout << "Assembled augmented block." << std::endl;
   }
 }

@@ -1164,93 +1164,21 @@ void create_preconditioner_for_augmented_block(
   }
 }
 
-template <int dim, int spacedim, typename MatrixType = SparseMatrix<double>,
+template <typename MatrixType = SparseMatrix<double>,
           typename VectorType = Vector<typename MatrixType::value_type>,
           typename PreconditionerType = TrilinosWrappers::PreconditionAMG>
-void create_augmented_block(
-    const DoFHandler<dim, spacedim> &velocity_dh, const MatrixType &C,
-    const MatrixType &Ct, const VectorType &scaling_vector,
-    const AffineConstraints<double> &velocity_constraints, const double gamma,
-    MatrixType &augmented_matrix) {
+void create_augmented_block(const MatrixType &A_vel, const MatrixType &C,
+                            const MatrixType &Ct,
+                            const VectorType &scaling_vector,
+                            const double gamma, MatrixType &augmented_matrix) {
 #ifdef DEAL_II_WITH_TRILINOS
-
-  Assert(dim <= spacedim, ExcImpossibleInDimSpacedim(dim, spacedim));
 
   if constexpr (std::is_same_v<TrilinosWrappers::SparseMatrix, MatrixType>) {
     Assert((std::is_same_v<TrilinosWrappers::MPI::Vector, VectorType>),
            ExcMessage("You must use Trilinos vectors, as you are using "
                       "Trilinos matrices."));
 
-    const IndexSet &locally_relevant_dofs =
-        DoFTools::extract_locally_relevant_dofs(velocity_dh);
-
-    TrilinosWrappers::SparsityPattern dsp(
-        velocity_dh.locally_owned_dofs(), velocity_dh.locally_owned_dofs(),
-        locally_relevant_dofs, velocity_dh.get_communicator());
-
-    DoFTools::make_sparsity_pattern(
-        velocity_dh, dsp, velocity_constraints, false,
-        Utilities::MPI::this_mpi_process(velocity_dh.get_communicator()));
-    dsp.compress();
-
-    MatrixType velocity_block;
-    velocity_block.reinit(dsp);
-
-    const auto &space_fe = velocity_dh.get_fe();
-
-    {
-      const QGauss<spacedim> quadrature_formula(space_fe.degree + 2);
-      FEValues<spacedim> fe_values(space_fe, quadrature_formula,
-                                   update_values | update_gradients |
-                                       update_quadrature_points |
-                                       update_JxW_values);
-
-      const unsigned int dofs_per_cell = space_fe.n_dofs_per_cell();
-      const unsigned int n_q_points = quadrature_formula.size();
-      const FEValuesExtractors::Vector velocities(0);
-      FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
-
-      std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
-      std::vector<Tensor<2, spacedim>> grad_phi_u(dofs_per_cell);
-      std::vector<double> div_phi_u(dofs_per_cell);
-
-      for (const auto &cell : velocity_dh.active_cell_iterators())
-        if (cell->is_locally_owned()) {
-          fe_values.reinit(cell);
-
-          cell_matrix = 0.;
-          for (unsigned int q = 0; q < n_q_points; ++q) {
-            for (unsigned int k = 0; k < dofs_per_cell; ++k) {
-              grad_phi_u[k] = fe_values[velocities].gradient(k, q);
-              div_phi_u[k] = fe_values[velocities].divergence(k, q);
-            }
-
-            for (unsigned int i = 0; i < dofs_per_cell; ++i) {
-              for (unsigned int j = 0; j <= i; ++j) {
-                cell_matrix(i, j) +=
-                    (1. * scalar_product(grad_phi_u[i],
-                                         grad_phi_u[j])  // symgrad-symgrad
-                     + gamma * div_phi_u[i] *
-                           div_phi_u[j]) *  // grad-div stabilization
-                    fe_values.JxW(q);
-              }
-            }
-          }
-
-          // exploit symmetry
-          for (unsigned int i = 0; i < dofs_per_cell; ++i)
-            for (unsigned int j = i + 1; j < dofs_per_cell; ++j)
-              cell_matrix(i, j) = cell_matrix(j, i);
-
-          cell->get_dof_indices(local_dof_indices);
-          velocity_constraints.distribute_local_to_global(
-              cell_matrix, local_dof_indices, velocity_block);
-        }
-      velocity_block.compress(VectorOperation::add);
-    }
-
-    // Extract Trilinos types
-    Epetra_CrsMatrix A_trilinos = velocity_block.trilinos_matrix();
+    Epetra_CrsMatrix A_trilinos = A_vel.trilinos_matrix();
     Epetra_CrsMatrix C_trilinos = C.trilinos_matrix();
     Epetra_CrsMatrix Ct_trilinos = Ct.trilinos_matrix();
     auto multi_vector = scaling_vector.trilinos_vector();
