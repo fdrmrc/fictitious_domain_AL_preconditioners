@@ -14,6 +14,7 @@
 #include <deal.II/dofs/dof_renumbering.h>
 #include <deal.II/dofs/dof_tools.h>
 #include <deal.II/fe/fe.h>
+#include <deal.II/fe/fe_dgp.h>
 #include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_system.h>
@@ -205,7 +206,10 @@ class IBStokesProblem {
     std::list<types::boundary_id> dirichlet_ids{0, 1, 2, 3};
 
     unsigned int velocity_finite_element_degree =
-        2;  // Pressure will be 1 (Taylor-Hood pair)
+        2;  // Pressure will be 1 (Taylor-Hood pair), or Q2-P1_disc (see next
+            // parameter)
+
+    bool use_disc_pressure = false;  // by default, we use Taylor-Hood
 
     unsigned int embedded_space_finite_element_degree = 1;  // multiplier space
 
@@ -331,6 +335,8 @@ IBStokesProblem<dim, spacedim>::Parameters::Parameters()
   add_parameter("Velocity space finite element degree",
                 velocity_finite_element_degree);
 
+  add_parameter("Use discontinuous pressure", use_disc_pressure);
+
   add_parameter("Embedded space finite element degree",
                 embedded_space_finite_element_degree);
 
@@ -417,10 +423,15 @@ void IBStokesProblem<dim, spacedim>::setup_grids_and_dofs() {
       std::make_unique<GridTools::Cache<spacedim, spacedim>>(*space_grid);
 
   embedded_grid = std::make_unique<Triangulation<dim, spacedim>>();
-  // GridGenerator::hyper_cube(*embedded_grid);
-  GridGenerator::hyper_sphere(*embedded_grid, {0.5, 0.5, 0.5}, 0.1);
-  // GridGenerator::torus(*embedded_grid, 0.3, 0.1);
+  if constexpr (spacedim == 2)
+    GridGenerator::hyper_cube(*embedded_grid);
+  else if constexpr (spacedim == 3)
+    GridGenerator::hyper_sphere(*embedded_grid, {0.5, 0.5, 0.5}, 0.1);
+  else
+    AssertThrow(false, ExcNotImplemented());
+
   embedded_grid->refine_global(parameters.initial_embedded_refinement);
+  // GridGenerator::torus(*embedded_grid, 0.3, 0.1);
   if constexpr (spacedim == 3) {
     if (embedded_grid->n_active_cells() < 1e3) {
       GridOut go;
@@ -504,9 +515,20 @@ void IBStokesProblem<dim, spacedim>::setup_background_dofs() {
   velocity_fe = std::make_unique<FESystem<spacedim>>(
       FE_Q<spacedim>(parameters.velocity_finite_element_degree) ^ spacedim);
 
-  space_fe = std::make_unique<FESystem<spacedim>>(
-      FE_Q<spacedim>(parameters.velocity_finite_element_degree) ^ spacedim,
-      FE_Q<spacedim>(parameters.velocity_finite_element_degree - 1));
+  // If we want to use a discontinuous pressure
+  if (parameters.use_disc_pressure == false) {
+    // Taylor-Hood
+    space_fe = std::make_unique<FESystem<spacedim>>(
+        FE_Q<spacedim>(parameters.velocity_finite_element_degree) ^ spacedim,
+        FE_Q<spacedim>(parameters.velocity_finite_element_degree - 1));
+  } else {
+    // First, we check that we use degree 2 for velocity field.
+    AssertThrow(parameters.velocity_finite_element_degree == 2,
+                ExcMessage("Invalid couple: not stable pair!"));
+
+    space_fe = std::make_unique<FESystem<spacedim>>(
+        FE_Q<spacedim>(2) ^ spacedim, FE_DGP<spacedim>(1));
+  }
 
   space_dh->distribute_dofs(*space_fe);
   velocity_dh->distribute_dofs(*velocity_fe);
@@ -1183,8 +1205,8 @@ int main(int argc, char **argv) {
     using namespace dealii;
     using namespace IBStokes;
 
-    // const unsigned int dim = 1, spacedim = 2;
-    const unsigned int dim = 2, spacedim = 3;
+    const unsigned int dim = 1, spacedim = 2;
+    // const unsigned int dim = 2, spacedim = 3;
 
     IBStokesProblem<dim, spacedim>::Parameters parameters;
     IBStokesProblem<dim, spacedim> problem(parameters);
