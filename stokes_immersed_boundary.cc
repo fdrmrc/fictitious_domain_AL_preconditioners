@@ -177,7 +177,7 @@ class IBStokesProblem {
   };
 
   ResultsData results_data;
-  IBStokesProblem(const Parameters &parameters);
+  IBStokesProblem(const Parameters &parameters, const MPI_Comm &comm);
 
   void run();
 
@@ -314,7 +314,8 @@ IBStokesProblem<dim, spacedim>::Parameters::Parameters()
 }
 
 template <int dim, int spacedim>
-IBStokesProblem<dim, spacedim>::IBStokesProblem(const Parameters &parameters)
+IBStokesProblem<dim, spacedim>::IBStokesProblem(const Parameters &parameters,
+                                                const MPI_Comm &comm)
     : parameters(parameters),
       embedded_value_function("Embedded value", spacedim),
       dirichlet_bc_function("Dirichlet boundary condition", spacedim + 1),
@@ -322,7 +323,7 @@ IBStokesProblem<dim, spacedim>::IBStokesProblem(const Parameters &parameters)
       outer_solver_control("Outer solver control"),
       augmented_lagrangian_control("Augmented Lagrangian control"),
       embedded_configuration_control("Embedded Configuration control"),
-      mpi_comm(MPI_COMM_WORLD),
+      mpi_comm(comm),
       pcout(std::cout, (Utilities::MPI::this_mpi_process(mpi_comm) == 0)),
       monitor(pcout, TimerOutput::summary, TimerOutput::wall_times) {
   embedded_value_function.declare_parameters_call_back.connect([]() -> void {
@@ -565,9 +566,9 @@ void IBStokesProblem<dim, spacedim>::setup_background_dofs() {
     sparsity_pattern_stokes.reinit(stokes_partitioning, stokes_partitioning,
                                    stokes_relevant_partitioning, mpi_comm);
 
-    DoFTools::make_sparsity_pattern(
-        *space_dh, coupling_table, sparsity_pattern_stokes, constraints, false,
-        Utilities::MPI::this_mpi_process(MPI_COMM_WORLD));
+    DoFTools::make_sparsity_pattern(*space_dh, coupling_table,
+                                    sparsity_pattern_stokes, constraints, false,
+                                    Utilities::MPI::this_mpi_process(mpi_comm));
     sparsity_pattern_stokes.compress();
   }
 
@@ -587,7 +588,7 @@ void IBStokesProblem<dim, spacedim>::setup_background_dofs() {
 
     DoFTools::make_sparsity_pattern(
         *space_dh, preconditioner_coupling, preconditioner_sparsity_pattern,
-        constraints, false, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD));
+        constraints, false, Utilities::MPI::this_mpi_process(mpi_comm));
     preconditioner_sparsity_pattern.compress();
   }
 
@@ -835,19 +836,37 @@ void IBStokesProblem<dim, spacedim>::assemble_preconditioner() {
         TrilinosWrappers::MPI::Vector pressure_diagonal_inv;
         pressure_diagonal_inv.reinit(stokes_partitioning[1], mpi_comm);
         // for (types::global_dof_index i = 0; i < n_cols_Mp; ++i)
-        for (const types::global_dof_index local_idx : stokes_partitioning[1])
-          pressure_diagonal_inv(local_idx) =
-              1. / preconditioner_matrix.block(1, 1).diag_element(local_idx);
+        const bool mass_lumping = true;
+        if (mass_lumping) {
+          // Just multiply the (1,1) block by 1 to perform sum over rows
+          TrilinosWrappers::MPI::Vector ones(stokes_partitioning[1], mpi_comm);
+          ones = 1.;
+          preconditioner_matrix.block(1, 1).vmult(pressure_diagonal_inv, ones);
 
-        pressure_diagonal_inv.compress(VectorOperation::insert);
+          for (auto row : stokes_partitioning[1]) {
+            diag_inverse_pressure_matrix_trilinos.set(
+                row, row, 1. / pressure_diagonal_inv[row]);
+          }
+          diag_inverse_pressure_matrix_trilinos.compress(
+              VectorOperation::insert);
 
-        // diag_inverse_pressure_matrix.reinit(pressure_diagonal_inv);
+        } else {
+          // Just take diagonal
+          for (const types::global_dof_index local_idx : stokes_partitioning[1])
+            pressure_diagonal_inv(local_idx) =
+                1. / preconditioner_matrix.block(1, 1).diag_element(local_idx);
 
-        for (auto row : stokes_partitioning[1]) {
-          diag_inverse_pressure_matrix_trilinos.set(row, row,
-                                                    pressure_diagonal_inv[row]);
+          pressure_diagonal_inv.compress(VectorOperation::insert);
+
+          // diag_inverse_pressure_matrix.reinit(pressure_diagonal_inv);
+
+          for (auto row : stokes_partitioning[1]) {
+            diag_inverse_pressure_matrix_trilinos.set(
+                row, row, pressure_diagonal_inv[row]);
+          }
+          diag_inverse_pressure_matrix_trilinos.compress(
+              VectorOperation::insert);
         }
-        diag_inverse_pressure_matrix_trilinos.compress(VectorOperation::insert);
 
       } else {
         Mp_inv_ilu.initialize(preconditioner_matrix.block(1, 1));
@@ -926,14 +945,6 @@ void IBStokesProblem<dim, spacedim>::solve() {
 
   } else if (std::strcmp(parameters.solver.c_str(), "IBStokesAL") == 0) {
     // Immersed boundary, with Augmented Lagrangian preconditioner
-
-    TrilinosWrappers::MPI::Vector v, dst;
-    v.reinit(velocity_dh->locally_owned_dofs());
-    v = 1.4;
-    dst.reinit(velocity_dh->locally_owned_dofs());
-    stokes_matrix.block(0, 0).vmult(dst, v);
-    std::cout << "Norm: " << dst.l2_norm() << std::endl;
-
     // As before, extract blocks from Stokes
     auto A = linear_operator<TrilinosWrappers::MPI::Vector,
                              TrilinosWrappers::MPI::Vector, PayloadType>(
@@ -963,13 +974,12 @@ void IBStokesProblem<dim, spacedim>::solve() {
     auto Mp_inv = null_operator(Mp);
 
     // Solver for the inversion of the pressure mass matrix.
-    SolverControl solver_control(100, 1e-16, false, false);
+    SolverControl solver_control(100, 1e-8, false, false);
     SolverCG<TrilinosWrappers::MPI::Vector> cg_solver(solver_control);
     // Inverse of the pressure mass matrix
     if (augmented_lagrangian_control.inverse_diag_square) {
-      Mp_inv = linear_operator<TrilinosWrappers::MPI::Vector,
-                               TrilinosWrappers::MPI::Vector>(
-          diag_inverse_pressure_matrix_trilinos);
+      Mp_inv = inverse_operator(Mp, cg_solver,
+                                diag_inverse_pressure_matrix_trilinos);
     } else {
       Mp_inv_ilu.initialize(preconditioner_matrix.block(1, 1));
       Mp_inv = inverse_operator(Mp, cg_solver, Mp_inv_ilu);
@@ -1224,8 +1234,9 @@ int main(int argc, char **argv) {
     // const unsigned int dim = 1, spacedim = 2;
     const unsigned int dim = 2, spacedim = 3;
 
+    MPI_Comm comm = MPI_COMM_WORLD;
     IBStokesProblem<dim, spacedim>::Parameters parameters;
-    IBStokesProblem<dim, spacedim> problem(parameters);
+    IBStokesProblem<dim, spacedim> problem(parameters, comm);
 
     mpi_initlog(true, parameters.verbosity_level);
     std::string parameter_file;

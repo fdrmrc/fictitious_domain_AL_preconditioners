@@ -1249,13 +1249,6 @@ void create_augmented_block(
       velocity_block.compress(VectorOperation::add);
     }
 
-    TrilinosWrappers::MPI::Vector v, dst;
-    v.reinit(velocity_dh.locally_owned_dofs());
-    v = 1.4;
-    dst.reinit(velocity_dh.locally_owned_dofs());
-    velocity_block.vmult(dst, v);
-    std::cout << "Norm: " << dst.l2_norm() << std::endl;
-
     // Extract Trilinos types
     Epetra_CrsMatrix A_trilinos = velocity_block.trilinos_matrix();
     Epetra_CrsMatrix C_trilinos = C.trilinos_matrix();
@@ -1283,56 +1276,24 @@ void create_augmented_block(
     }
     diag_matrix.FillComplete();
 
-    // // Compute C^T * diag(v)
-    // Epetra_CrsMatrix *temp1 =
-    //     new Epetra_CrsMatrix(Copy, Ct_trilinos.RowMap(), 0);
-    // EpetraExt::MatrixMatrix::Multiply(Ct_trilinos, false, diag_matrix, false,
-    //                                   *temp1);
-
-    // // Compute (C^T * diag(v)) * C
-    // Epetra_CrsMatrix *temp2 = new Epetra_CrsMatrix(Copy, temp1->RowMap(), 0);
-    // EpetraExt::MatrixMatrix::Multiply(*temp1, false, C_trilinos, false,
-    // *temp2);
-
-    // // Add A to the result, scaling with gamma
-    // Epetra_CrsMatrix *result = new Epetra_CrsMatrix(Copy,
-    // A_trilinos.RowMap(),
-    //                                                 A_trilinos.MaxNumEntries());
-    // EpetraExt::MatrixMatrix::Add(A_trilinos, false, 1.0, *temp2, false,
-    // gamma,
-    //                              result);
-    // result->FillComplete();
-
-    // Finally, initialize the Trilinos matrix
-    // augmented_matrix.reinit(*result, true /*copy_values*/);
-    // delete temp1;
-    // delete temp2;
-    // delete result;
-
-    // Compute W = C^T * diag(V)
     Epetra_CrsMatrix *W = new Epetra_CrsMatrix(Copy, Ct_trilinos.RowMap(), 0);
     EpetraExt::MatrixMatrix::Multiply(Ct_trilinos, false, diag_matrix, false,
                                       *W);
-    std::cout << "Done first" << std::endl;
 
     // Compute Ct^T * W, which is equivalent to (C^T * diag(V)) * C
     Epetra_CrsMatrix *CtT_W = new Epetra_CrsMatrix(Copy, W->RangeMap(), 0);
-    EpetraExt::MatrixMatrix::Multiply(*W, false /* transpose */, Ct_trilinos,
-                                      true, *CtT_W);
-    std::cout << "Done second" << std::endl;
+    EpetraExt::MatrixMatrix::Multiply(*W, false /* transpose */, C_trilinos,
+                                      false, *CtT_W);
 
     // Add A to the result, scaling with gamma
     Epetra_CrsMatrix *result = new Epetra_CrsMatrix(Copy, A_trilinos.RowMap(),
                                                     A_trilinos.MaxNumEntries());
     EpetraExt::MatrixMatrix::Add(A_trilinos, false, 1.0, *CtT_W, false, gamma,
                                  result);
-    std::cout << "Done addition" << std::endl;
     result->FillComplete();
 
     // Initialize the final Trilinos matrix
-    std::cout << "Before initializing Trilinos matrix" << std::endl;
     augmented_matrix.reinit(*result, true /*copy_values*/);
-    std::cout << "Initialized Trilinos matrix" << std::endl;
 
     // Delete unnecessary objects.
     delete W;
