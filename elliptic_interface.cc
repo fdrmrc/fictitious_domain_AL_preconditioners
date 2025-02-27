@@ -426,40 +426,43 @@ void ImmersedLaplaceSolver<dim, fe_degree>::solve() {
 
   const double gamma_AL = 10.;  // gamma
   auto invW1 = linear_operator(mass_matrix_fg, M_inv_umfpack);
+  auto invW = invW1 * invW1;  // W = M^{-2}
 
-  auto invW = invW1 * invW1;
-
+  // Define augmented blocks
   auto A11_aug = A_omega1 + gamma_AL * Ct * invW * C;
   auto A22_aug = A_omega2 + gamma_AL * M * invW * M;
   auto A12_aug = -gamma_AL * Ct * invW * M;
   auto A21_aug = transpose_operator(A12_aug);
 
-  auto Aug = block_operator<2, 2, BlockVector<double>>(
-      {{{{A11_aug, A12_aug}}, {{A21_aug, A22_aug}}}});
-
-  auto AAA = block_operator<3, 3, BlockVector<double>>(
+  auto system_operator = block_operator<3, 3, BlockVector<double>>(
       {{{{A11_aug, A12_aug, Ct}},
         {{A21_aug, A22_aug, -1. * M}},
         {{C, -1. * M, NullCouplin}}}});  // augmented the 2x2 top left block!
 
+  auto Aug = block_operator<2, 2, BlockVector<double>>(
+      {{{{A11_aug, A12_aug}},
+        {{A21_aug, A22_aug}}}});  // augmented block to be inverted
+
+  // Define preconditioner for the augmented block
   TrilinosWrappers::PreconditionAMG amg_prec_A11;
   amg_prec_A11.initialize(stiffness_matrix_bg);
   auto AMG_A1 = linear_operator(stiffness_matrix_bg, amg_prec_A11);
-
   TrilinosWrappers::PreconditionAMG amg_prec_A22;
   amg_prec_A22.initialize(stiffness_matrix_fg);
   auto AMG_A2 = linear_operator(stiffness_matrix_fg, amg_prec_A22);
+
   auto prec_aug = block_operator<2, 2, BlockVector<double>>(
       {{{{AMG_A1, NullF}}, {{NullS, AMG_A2}}}});
+  auto Aug_inv = inverse_operator(Aug, solver_lagrangian, prec_aug);
 
-  auto Aug_inv =
-      inverse_operator(Aug, solver_lagrangian, prec_aug);  //! augmented
+  // Define block preconditioner using AL approach
   BlockTriangularPreconditionerAL preconditioner_AL(Aug_inv, C, M, invW,
                                                     gamma_AL);
+
   SolverFGMRES<BlockVector<Number>> solver_fgmres(solver_control);
 
-  system_rhs_block.block(2) = 0;
-  solver_fgmres.solve(AAA, system_solution_block, system_rhs_block,
+  system_rhs_block.block(2) = 0;  // last row of the rhs is 0
+  solver_fgmres.solve(system_operator, system_solution_block, system_rhs_block,
                       preconditioner_AL);
 
   std::cout << "Solved in " << solver_control.last_step() << " iterations"
