@@ -17,6 +17,7 @@
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/block_linear_operator.h>
 #include <deal.II/lac/block_vector.h>
+#include <deal.II/lac/diagonal_matrix.h>
 #include <deal.II/lac/linear_operator.h>
 #include <deal.II/lac/linear_operator_tools.h>
 #include <deal.II/lac/precondition.h>
@@ -41,7 +42,7 @@ using namespace dealii;
 static constexpr double beta_2 = 10;
 
 template <int dim, int fe_degree>
-class ImmersedLaplaceSolver {
+class EllipticInterfaceDLM {
  public:
   typedef double LevelNumber;
   typedef double Number;
@@ -55,7 +56,7 @@ class ImmersedLaplaceSolver {
 
   class AdditionalData;
 
-  ImmersedLaplaceSolver(const unsigned int &n_refinements = 2);
+  EllipticInterfaceDLM(const unsigned int &n_refinements = 2);
 
   void system_setup();
 
@@ -110,7 +111,7 @@ class ImmersedLaplaceSolver {
 };
 
 template <int dim, int fe_degree>
-ImmersedLaplaceSolver<dim, fe_degree>::ImmersedLaplaceSolver(
+EllipticInterfaceDLM<dim, fe_degree>::EllipticInterfaceDLM(
     const unsigned int &n_refinements)
     : fe_bg(fe_degree),
       fe_fg(fe_degree),
@@ -134,7 +135,7 @@ ImmersedLaplaceSolver<dim, fe_degree>::ImmersedLaplaceSolver(
 }
 
 template <int dim, int fe_degree>
-void ImmersedLaplaceSolver<dim, fe_degree>::system_setup() {
+void EllipticInterfaceDLM<dim, fe_degree>::system_setup() {
   dof_handler_bg.distribute_dofs(fe_bg);
   dof_handler_fg.distribute_dofs(fe_fg);
 
@@ -167,7 +168,7 @@ void ImmersedLaplaceSolver<dim, fe_degree>::system_setup() {
 }
 
 template <int dim, int fe_degree>
-void ImmersedLaplaceSolver<dim, fe_degree>::setup_stiffnesss(
+void EllipticInterfaceDLM<dim, fe_degree>::setup_stiffnesss(
     const DoFHandler<dim> &dof_handler, AffineConstraints<double> &constraints,
     SparsityPattern &stiffness_sparsity,
     SparseMatrix<Number> &stiffness_matrix) const {
@@ -178,7 +179,7 @@ void ImmersedLaplaceSolver<dim, fe_degree>::setup_stiffnesss(
 }
 
 template <int dim, int fe_degree>
-void ImmersedLaplaceSolver<dim, fe_degree>::setup_coupling() {
+void EllipticInterfaceDLM<dim, fe_degree>::setup_coupling() {
   QGauss<dim> quad(fe_degree + 1);
 
   {
@@ -197,7 +198,7 @@ void ImmersedLaplaceSolver<dim, fe_degree>::setup_coupling() {
 }
 
 template <int dim, int fe_degree>
-void ImmersedLaplaceSolver<dim, fe_degree>::assemble_subsystem(
+void EllipticInterfaceDLM<dim, fe_degree>::assemble_subsystem(
     const FiniteElement<dim> &fe, const DoFHandler<dim> &dof_handler,
     const AffineConstraints<double> &constraints,
     SparseMatrix<Number> &system_matrix, Vector<Number> &system_rhs, double rho,
@@ -244,7 +245,7 @@ void ImmersedLaplaceSolver<dim, fe_degree>::assemble_subsystem(
 }
 
 template <int dim, int fe_degree>
-void ImmersedLaplaceSolver<dim, fe_degree>::assemble() {
+void EllipticInterfaceDLM<dim, fe_degree>::assemble() {
   const double rho_f = 0;
   const double mu_f = 1;  // beta
 
@@ -386,7 +387,7 @@ class BlockTriangularPreconditionerAL {
 };
 
 template <int dim, int fe_degree>
-void ImmersedLaplaceSolver<dim, fe_degree>::solve() {
+void EllipticInterfaceDLM<dim, fe_degree>::solve() {
   SparseDirectUMFPACK Af_inv_umfpack;
   Af_inv_umfpack.initialize(stiffness_matrix_bg);  // Ainv
 
@@ -492,7 +493,7 @@ void ImmersedLaplaceSolver<dim, fe_degree>::solve() {
 }
 
 template <int dim, int fe_degree>
-void ImmersedLaplaceSolver<dim, fe_degree>::output_results() const {
+void EllipticInterfaceDLM<dim, fe_degree>::output_results() const {
   {
     DataOut<dim> data_out;
     data_out.attach_dof_handler(dof_handler_fg);
@@ -521,7 +522,7 @@ int main(int argc, char *argv[]) {
   const unsigned int n_refinements =
       argc == 1 ? 2 : std::strtol(argv[1], NULL, 10);
 
-  ImmersedLaplaceSolver<dim, degree> solver(n_refinements);
+  EllipticInterfaceDLM<dim, degree> solver(n_refinements);
   solver.system_setup();
   solver.setup_coupling();
   solver.assemble();
