@@ -194,21 +194,6 @@ void ImmersedLaplaceSolver<dim, fe_degree>::setup_coupling() {
         dof_handler_bg, dof_handler_fg, quad, coupling_matrix, constraints_bg,
         ComponentMask(), ComponentMask());
   }
-
-  if (false) {
-    DynamicSparsityPattern dsp(dof_handler_fg.n_dofs(),
-                               dof_handler_fg.n_dofs());
-
-    NonMatching::create_coupling_sparsity_pattern(
-        dof_handler_fg, dof_handler_fg, quad, dsp, AffineConstraints<double>(),
-        ComponentMask(), ComponentMask());
-    mass_sparsity_fg.copy_from(dsp);
-    mass_matrix_fg.reinit(mass_sparsity_fg);
-
-    NonMatching::create_coupling_mass_matrix(
-        dof_handler_fg, dof_handler_fg, quad, mass_matrix_fg,
-        AffineConstraints<double>(), ComponentMask(), ComponentMask());
-  }
 }
 
 template <int dim, int fe_degree>
@@ -428,7 +413,8 @@ void ImmersedLaplaceSolver<dim, fe_degree>::solve() {
   auto invW1 = linear_operator(mass_matrix_fg, M_inv_umfpack);
   auto invW = invW1 * invW1;  // W = M^{-2}
 
-  // Define augmented blocks
+  // Define augmented blocks. Notice that A22_aug is actually A_omega2 +
+  // gamma_AL * Id
   auto A11_aug = A_omega1 + gamma_AL * Ct * invW * C;
   auto A22_aug = A_omega2 + gamma_AL * M * invW * M;
   auto A12_aug = -gamma_AL * Ct * invW * M;
