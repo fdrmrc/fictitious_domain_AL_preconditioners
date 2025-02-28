@@ -403,9 +403,6 @@ void ImmersedLaplaceSolver<dim, fe_degree>::solve() {
   auto C = transpose_operator(Ct);
   auto Af_inv = linear_operator(stiffness_matrix_bg, Af_inv_umfpack);
 
-  SolverControl solver_control(10000, 1e-9, true, true);
-  PrimitiveVectorMemory<BlockVector<Number>> mem;
-
   SolverControl control_lagrangian(40000, 1e-2, false, true);
   SolverCG<BlockVector<double>> solver_lagrangian(control_lagrangian);
 
@@ -445,14 +442,15 @@ void ImmersedLaplaceSolver<dim, fe_degree>::solve() {
   BlockTriangularPreconditionerAL preconditioner_AL(Aug_inv, C, M, invW,
                                                     gamma_AL);
 
-  SolverFGMRES<BlockVector<Number>> solver_fgmres(solver_control);
+  SolverControl outer_control(10000, 1e-9, true, true);
+  SolverFGMRES<BlockVector<Number>> solver_fgmres(outer_control);
 
   system_rhs_block.block(2) = 0;  // last row of the rhs is 0
   solver_fgmres.solve(system_operator, system_solution_block, system_rhs_block,
                       preconditioner_AL);
 
-  std::cout << "Solved in " << solver_control.last_step() << " iterations"
-            << (solver_control.last_step() < 10 ? "  " : " ") << "\n";
+  std::cout << "Solved in " << outer_control.last_step() << " iterations"
+            << (outer_control.last_step() < 10 ? "  " : " ") << "\n";
 
   // Do a sanity check
   Vector<Number> difference_constraints = system_solution_block.block(2);
