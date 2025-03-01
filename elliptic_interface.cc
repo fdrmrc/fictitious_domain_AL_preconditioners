@@ -6,7 +6,6 @@
 #include <deal.II/base/parsed_function.h>
 #include <deal.II/base/timer.h>
 #include <deal.II/base/utilities.h>
-#include <deal.II/base/vectorization.h>
 #include <deal.II/dofs/dof_tools.h>
 #include <deal.II/fe/fe.h>
 #include <deal.II/fe/fe_q.h>
@@ -20,7 +19,6 @@
 #include <deal.II/lac/block_linear_operator.h>
 #include <deal.II/lac/block_vector.h>
 #include <deal.II/lac/diagonal_matrix.h>
-#include <deal.II/lac/linear_operator.h>
 #include <deal.II/lac/linear_operator_tools.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/solver_cg.h>
@@ -38,7 +36,9 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
-#include <sstream>
+
+// We include the header file where AL preconditioners are implemented
+#include "augmented_lagrangian_preconditioner.h"
 
 using namespace dealii;
 
@@ -61,7 +61,7 @@ class ProblemParameters : public ParameterAcceptor {
   std::string arguments_for_immersed_grid = "-0.14: 0.44: true";
 
   // Number of refinement cycles
-  unsigned int n_cycles = 5;
+  unsigned int n_refinement_cycles = 5;
 
   // Coefficients determining the size of the jump. beta_1 is usually kept at 1.
   double beta_1 = 1.;
@@ -79,7 +79,7 @@ class ProblemParameters : public ParameterAcceptor {
 
   unsigned int verbosity_level = 10;
 
-  std::string outer_solver = "FGMRES";
+  bool use_modified_AL_preconditioner = false;
 
   bool use_diagonal = false;
 
@@ -98,10 +98,10 @@ template <int dim>
 ProblemParameters<dim>::ProblemParameters()
     : ParameterAcceptor("Elliptic Interface Problem/"),
       rhs("Right hand side", dim + 1) {
-  add_parameter("Background FE degree", background_space_finite_element_degree,
+  add_parameter("FE degree background", background_space_finite_element_degree,
                 "", this->prm, Patterns::Integer(1));
 
-  add_parameter("Immersed FE degree", immersed_space_finite_element_degree, "",
+  add_parameter("FE degree immersed", immersed_space_finite_element_degree, "",
                 this->prm, Patterns::Integer(1));
 
   add_parameter("Coupling quadrature order", coupling_quadrature_order);
@@ -132,28 +132,21 @@ ProblemParameters<dim>::ProblemParameters()
     add_parameter(
         "Initial immersed refinement", initial_immersed_refinement,
         "Initial number of refinements used for the immersed domain Gamma");
-    add_parameter("Refinemented cycles", n_cycles,
-                  "Number of refinement cycles to perform. Useful if you want "
-                  "to study convergence.");
+    add_parameter("Refinemented cycles", n_refinement_cycles,
+                  "Number of refinement cycles to perform convergence studies");
   }
   leave_subsection();
 
   enter_subsection("AL preconditioner");
   {
-    add_parameter("Outer solver", outer_solver);
+    add_parameter("Use modified AL preconditioner",
+                  use_modified_AL_preconditioner,
+                  "Use the modified AL preconditioner.");
     add_parameter("Use diagonal", use_diagonal,
                   "Use diagonal approximation of mass matrices.");
-    add_parameter("Verbosity level", verbosity_level);
-  }
-  leave_subsection();
-
-  // Parameters for the modified AL
-  enter_subsection("Modified AL preconditioner");
-  {
-    add_parameter("Outer solver", outer_solver);
-    add_parameter("Use diagonal", use_diagonal,
-                  "Use diagonal approximation of mass matrices.");
-    add_parameter("Use sqrt(2)-rule for gamma", use_sqrt_2_rule);
+    add_parameter("Use sqrt(2)-rule for gamma", use_sqrt_2_rule,
+                  "Use sqrt(2)-rule for gamma. It makes sense only for "
+                  "modified AL variant.");
     add_parameter("gamma", gamma_AL);
     add_parameter("Verbosity level", verbosity_level);
   }
@@ -238,37 +231,6 @@ EllipticInterfaceDLM<dim>::EllipticInterfaceDLM(
       fe_bg(parameters.background_space_finite_element_degree),
       fe_fg(parameters.immersed_space_finite_element_degree) {
   static_assert(dim == 2);
-
-  // Old manual way. TODO: remove once you have it working
-  // GridGenerator::hyper_cube(tria_bg, -1., 1., true);
-  // GridGenerator::hyper_cube(tria_fg, -0.14, .44, true);
-  // // GridGenerator::hyper_ball(tria_fg, Point<dim>(), 0.5, true);
-
-  // // tria_bg.refine_global(n_refinements + 3);
-  // tria_bg.refine_global(n_refinements + 2);
-  // tria_fg.refine_global(n_refinements);
-
-  // // Check mesh sizes. We try to verify they are not too differen by using
-  // // suitable safety factors.
-  // const double h_background = GridTools::maximal_cell_diameter(tria_bg);
-  // const double h_immersed = GridTools::maximal_cell_diameter(tria_fg);
-  // const double ratio = h_immersed / h_background;
-  // std::cout << "h background = " << h_background << "\n"
-  //           << "h immersed = " << h_immersed << "\n"
-  //           << "grids ratio = " << ratio << std::endl;
-
-  // const double safety_factor = 1.2;
-  // AssertThrow((ratio) < safety_factor || (ratio) > 0.7,
-  //             ExcMessage("Check mesh sizes of the two grids."));
-
-  // // Do not dump grid to disk if meshes too large
-  // if (tria_bg.n_active_cells() < 1e3) {
-  //   std::ofstream bg_out("background_grid.vtk");
-  //   std::ofstream fg_out("immersed_grid.vtk");
-  //   GridOut grid_out;
-  //   grid_out.write_vtk(tria_bg, bg_out);
-  //   grid_out.write_vtk(tria_fg, fg_out);
-  // }
 }
 
 // Generate the grids for the background and immersed domains
@@ -462,127 +424,6 @@ void output_double_number(double input, const std::string &text) {
   std::cout << text << input << std::endl;
 }
 
-// Original AL preconditioner
-class BlockTriangularPreconditionerAL {
- public:
-  BlockTriangularPreconditionerAL(
-      const LinearOperator<BlockVector<double>> Aug_inv_,
-      const LinearOperator<Vector<double>> C_,
-      const LinearOperator<Vector<double>> M_,
-      const LinearOperator<Vector<double>> invW_, const double gamma_) {
-    Aug_inv = Aug_inv_;
-    C = C_;
-    Ct = transpose_operator(C);
-    M = M_;
-    invW = invW_;
-    gamma = gamma_;
-  }
-
-  void vmult(BlockVector<double> &v, const BlockVector<double> &u) const {
-    v.block(0) = 0.;
-    v.block(1) = 0.;
-    v.block(2) = 0.;
-
-    v.block(2) = -gamma * invW * u.block(2);
-
-    // Now, use the action of the Aug_inv on the first two components of the
-    // solution
-    BlockVector<double> uu2, result;
-
-    uu2.reinit(2);
-    uu2.block(0).reinit(u.block(0));
-    uu2.block(0) = u.block(0) - Ct * v.block(2);
-
-    uu2.block(1).reinit(u.block(1));
-    uu2.block(1) = u.block(1) + 1. * M * v.block(2);
-
-    result.reinit(2);
-    result.block(0).reinit(u.block(0));
-    result.block(1).reinit(u.block(1));
-
-    result = Aug_inv * uu2;
-    // Copy solutions back to the output of this routine
-    v.block(0) = result.block(0);
-    v.block(1) = result.block(1);
-  }
-
-  LinearOperator<BlockVector<double>> Aug_inv;
-  LinearOperator<Vector<double>> C;
-  LinearOperator<Vector<double>> Ct;
-  LinearOperator<Vector<double>> M;
-  LinearOperator<Vector<double>> invW;
-  double gamma;
-};
-
-// Implementation of the modified AL preconditioner. Notice how we need the
-// inverse of the diagonal blocks.
-class BlockTriangularPreconditionerALModified {
- public:
-  BlockTriangularPreconditionerALModified(
-      const LinearOperator<Vector<double>> C_,
-      const LinearOperator<Vector<double>> M_,
-      const LinearOperator<Vector<double>> invW_, const double gamma_,
-      const LinearOperator<Vector<double>> A11_inv_,
-      const LinearOperator<Vector<double>> A22_inv_) {
-    A11_inv = A11_inv_;
-    A22_inv = A22_inv_;
-    C = C_;
-    Ct = transpose_operator(C);
-    M = M_;
-    invW = invW_;
-    gamma = gamma_;
-  }
-
-  template <typename BlockVectorType>
-  void vmult(BlockVectorType &dst, const BlockVectorType &src) const {
-    // Assert that the block vectors have the right number of blocks
-    Assert(src.n_blocks() == 3, ExcDimensionMismatch(src.n_blocks(), 3));
-    Assert(dst.n_blocks() == 3, ExcDimensionMismatch(dst.n_blocks(), 3));
-
-    // Extract the blocks from the source vector
-    const auto &u = src.block(0);
-    const auto &u2 = src.block(1);
-    const auto &lambda = src.block(2);
-
-    // Create temporary vectors for intermediate results
-    typename BlockVectorType::BlockType temp(lambda.size());
-
-    // 1. Compute the third block first (1st inverse application: invW)
-    dst.block(2) = invW * lambda;
-    dst.block(2) *= -gamma;
-
-    // Prepare for the second block calculation
-    temp = M * (-1.0 / gamma * dst.block(2));  // M * invW * lambda
-
-    // 2. Compute the second block (2nd inverse application: A22_inv)
-    // A22_inv * (u2 - gamma * M * invW * lambda)
-    temp *= -gamma;
-    temp += u2;
-    dst.block(1) = A22_inv * temp;
-
-    // Prepare for the first block calculation
-    auto B_T = -gamma * Ct * invW * M;
-    temp = B_T * dst.block(1);  // B_T * A22_inv * (...)
-    temp *= -1.0;
-    temp += u;
-
-    // Add the term with Ct
-    auto C_T_term = Ct * (-1.0 / gamma * dst.block(2));  // Ct * invW * lambda
-    temp += gamma * C_T_term;
-
-    // 3. Compute the first block (3rd inverse application: A11_inv)
-    dst.block(0) = A11_inv * temp;
-  }
-
-  LinearOperator<Vector<double>> A11_inv;
-  LinearOperator<Vector<double>> A22_inv;
-  LinearOperator<Vector<double>> C;
-  LinearOperator<Vector<double>> Ct;
-  LinearOperator<Vector<double>> M;
-  LinearOperator<Vector<double>> invW;
-  double gamma;
-};
-
 template <int dim>
 void EllipticInterfaceDLM<dim>::solve() {
   SparseDirectUMFPACK Af_inv_umfpack;
@@ -630,11 +471,9 @@ void EllipticInterfaceDLM<dim>::solve() {
         {{A21_aug, A22_aug, -1. * M}},
         {{C, -1. * M, NullCouplin}}}});  // augmented the 2x2 top left block!
 
-  auto Aug = block_operator<2, 2, BlockVector<double>>(
-      {{{{A11_aug, A12_aug}},
-        {{A21_aug, A22_aug}}}});  // augmented block to be inverted
+  SolverControl outer_control(10000, 1e-6, true, true);
+  SolverFGMRES<BlockVector<Number>> solver_fgmres(outer_control);
 
-  // Define preconditioner for the augmented block
   TrilinosWrappers::PreconditionAMG amg_prec_A11;
   amg_prec_A11.initialize(stiffness_matrix_bg);
   auto AMG_A1 = linear_operator(stiffness_matrix_bg, amg_prec_A11);
@@ -642,29 +481,36 @@ void EllipticInterfaceDLM<dim>::solve() {
   amg_prec_A22.initialize(stiffness_matrix_fg);
   auto AMG_A2 = linear_operator(stiffness_matrix_fg, amg_prec_A22);
 
-  auto prec_aug = block_operator<2, 2, BlockVector<double>>(
-      {{{{AMG_A1, NullF}}, {{NullS, AMG_A2}}}});
-  PreconditionIdentity prec_id;
-  auto Aug_inv = inverse_operator(Aug, solver_lagrangian, prec_id);
+  if (parameters.use_modified_AL_preconditioner) {
+    SolverCG<Vector<double>> solver_lagrangian_scalar(control_lagrangian);
+    // Define block preconditioner using AL approach
+    auto A11_aug_inv =
+        inverse_operator(A11_aug, solver_lagrangian_scalar, AMG_A1);
+    auto A22_aug_inv =
+        inverse_operator(A22_aug, solver_lagrangian_scalar, AMG_A2);
 
-  SolverCG<Vector<double>> solver_lagrangian_scalar(control_lagrangian);
-  // Define block preconditioner using AL approach
-  auto A11_aug_inv =
-      inverse_operator(A11_aug, solver_lagrangian_scalar, AMG_A1);
-  auto A22_aug_inv =
-      inverse_operator(A22_aug, solver_lagrangian_scalar, AMG_A2);
+    EllipticInterfacePreconditioners::BlockTriangularALPreconditionerModified
+        preconditioner_AL(C, M, invW, parameters.gamma_AL, A11_aug_inv,
+                          A22_aug_inv);
+    solver_fgmres.solve(system_operator, system_solution_block,
+                        system_rhs_block, preconditioner_AL);
+  } else {
+    // Define preconditioner for the augmented block
+    auto prec_aug = block_operator<2, 2, BlockVector<double>>(
+        {{{{AMG_A1, NullF}}, {{NullS, AMG_A2}}}});
+    PreconditionIdentity prec_id;
+    auto Aug = block_operator<2, 2, BlockVector<double>>(
+        {{{{A11_aug, A12_aug}},
+          {{A21_aug, A22_aug}}}});  // augmented block to be inverted
+    auto Aug_inv = inverse_operator(Aug, solver_lagrangian, prec_aug);
 
-  BlockTriangularPreconditionerALModified preconditioner_AL(
-      C, M, invW, parameters.gamma_AL, A11_aug_inv, A22_aug_inv);
-  // BlockTriangularPreconditionerAL preconditioner_AL(Aug_inv, C, M, invW,
-  //                                                   gamma_AL);
-
-  SolverControl outer_control(10000, 1e-6, true, true);
-  SolverFGMRES<BlockVector<Number>> solver_fgmres(outer_control);
+    EllipticInterfacePreconditioners::BlockTriangularALPreconditioner
+        preconditioner_AL(Aug_inv, C, M, invW, parameters.gamma_AL);
+    solver_fgmres.solve(system_operator, system_solution_block,
+                        system_rhs_block, preconditioner_AL);
+  }
 
   system_rhs_block.block(2) = 0;  // last row of the rhs is 0
-  solver_fgmres.solve(system_operator, system_solution_block, system_rhs_block,
-                      preconditioner_AL);
 
   std::cout << "Solved in " << outer_control.last_step() << " iterations"
             << (outer_control.last_step() < 10 ? "  " : " ") << "\n";
@@ -731,9 +577,9 @@ void EllipticInterfaceDLM<dim>::output_results() const {
 
 template <int dim>
 void EllipticInterfaceDLM<dim>::run() {
-  for (unsigned int ref_cycle = 0; ref_cycle < parameters.n_cycles;
+  for (unsigned int ref_cycle = 0; ref_cycle < parameters.n_refinement_cycles;
        ++ref_cycle) {
-    std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" << std::endl;
+    std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" << std::endl;8
     std::cout << "Refinement cycle: " << ref_cycle << std::endl;
     std::cout << "gamma_AL= " << parameters.gamma_AL << std::endl;
     // Create the grids only during the first refinement cycle
@@ -749,7 +595,7 @@ void EllipticInterfaceDLM<dim>::run() {
     setup_coupling();
     assemble();
     solve();
-    if (parameters.use_sqrt_2_rule)
+    if (parameters.use_modified_AL_preconditioner && parameters.use_sqrt_2_rule)
       parameters.gamma_AL /= std::sqrt(2.);  // using sqrt(2)-rule from
                                              // modified-AL paper.
     output_results();
