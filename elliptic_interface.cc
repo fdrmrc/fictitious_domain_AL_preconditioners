@@ -94,13 +94,15 @@ class ProblemParameters : public ParameterAcceptor {
       rhs;  //(f,f_2,0)
 
   mutable ParameterAcceptorProxy<ReductionControl> outer_solver_control;
+  mutable ParameterAcceptorProxy<ReductionControl> inner_solver_control;
 };
 
 template <int dim>
 ProblemParameters<dim>::ProblemParameters()
     : ParameterAcceptor("Elliptic Interface Problem/"),
       rhs("Right hand side", dim + 1),
-      outer_solver_control("Outer solver control") {
+      outer_solver_control("Outer solver control"),
+      inner_solver_control("Inner solver control") {
   add_parameter("FE degree background", background_space_finite_element_degree,
                 "", this->prm, Patterns::Integer(1));
 
@@ -164,6 +166,15 @@ ProblemParameters<dim>::ProblemParameters()
     ParameterAcceptor::prm.set("Reduction", "1.e-6");
     ParameterAcceptor::prm.set("Tolerance", "1.e-9");
     ParameterAcceptor::prm.set("Log history", "true");
+    ParameterAcceptor::prm.set("Log result", "true");
+  });
+
+  // Same, but for inner solver
+  inner_solver_control.declare_parameters_call_back.connect([]() -> void {
+    ParameterAcceptor::prm.set("Max steps", "1000");
+    ParameterAcceptor::prm.set("Reduction", "1.e-20");
+    ParameterAcceptor::prm.set("Tolerance", "1.e-4");
+    ParameterAcceptor::prm.set("Log history", "false");
     ParameterAcceptor::prm.set("Log result", "true");
   });
 }
@@ -453,8 +464,9 @@ void EllipticInterfaceDLM<dim>::solve() {
   auto Ct = linear_operator(coupling_matrix);
   auto C = transpose_operator(Ct);
 
-  SolverControl control_lagrangian(40000, 1e-4, false, true);
-  SolverCG<BlockVector<double>> solver_lagrangian(control_lagrangian);
+  // SolverControl control_lagrangian(40000, 1e-4, false, true);
+  SolverCG<BlockVector<double>> solver_lagrangian(
+      parameters.inner_solver_control);
 
   auto invW1 = linear_operator(mass_matrix_fg, M_inv_umfpack);
   auto invW = invW1 * invW1;  // W = M^{-2}
@@ -499,7 +511,8 @@ void EllipticInterfaceDLM<dim>::solve() {
         parameters.gamma_AL < 1.,
         ExcMessage("gamma_AL is too large for modified AL preconditioner."));
 
-    SolverCG<Vector<double>> solver_lagrangian_scalar(control_lagrangian);
+    SolverCG<Vector<double>> solver_lagrangian_scalar(
+        parameters.inner_solver_control);
     // Define block preconditioner using AL approach
     auto A11_aug_inv =
         inverse_operator(A11_aug, solver_lagrangian_scalar, AMG_A1);
