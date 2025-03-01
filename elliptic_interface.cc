@@ -374,28 +374,34 @@ class BlockTriangularPreconditionerALModified {
     const auto &u2 = src.block(1);
     const auto &lambda = src.block(2);
 
-    // Compute the third block first
+    // Create temporary vectors for intermediate results
+    typename BlockVectorType::BlockType temp(lambda.size());
+
+    // 1. Compute the third block first (1st inverse application: invW)
     dst.block(2) = invW * lambda;
     dst.block(2) *= -gamma;
 
-    // Compute the second block (reusing dst.block(2) which contains -gamma *
-    // W_inv * lambda)
-    auto M_W_inv_lambda =
-        M * (-1.0 / gamma * dst.block(2));  // Adjust for the -gamma factor
-    auto A22_inv_u2 = A22_inv * u2;
-    auto A22_inv_M_W_inv_lambda = A22_inv * M_W_inv_lambda;
-    dst.block(1) = A22_inv_u2 - gamma * A22_inv_M_W_inv_lambda;
+    // Prepare for the second block calculation
+    temp = M * (-1.0 / gamma * dst.block(2));  // M * invW * lambda
 
-    // Compute the first block (reusing previously computed expressions)
+    // 2. Compute the second block (2nd inverse application: A22_inv)
+    // A22_inv * (u2 - gamma * M * invW * lambda)
+    temp *= -gamma;
+    temp += u2;
+    dst.block(1) = A22_inv * temp;
+
+    // Prepare for the first block calculation
     auto B_T = -gamma * Ct * invW * M;
-    auto B_T_A22_inv_u2 = B_T * A22_inv_u2;
-    auto B_T_A22_inv_M_W_inv_lambda = B_T * A22_inv_M_W_inv_lambda;
-    auto C_T_W_inv_lambda =
-        Ct * (-1.0 / gamma * dst.block(2));  // Adjust for the -gamma factor
+    temp = B_T * dst.block(1);  // B_T * A22_inv * (...)
+    temp *= -1.0;
+    temp += u;
 
-    dst.block(0) =
-        A11_inv * (u - B_T_A22_inv_u2 +
-                   gamma * (C_T_W_inv_lambda - B_T_A22_inv_M_W_inv_lambda));
+    // Add the term with Ct
+    auto C_T_term = Ct * (-1.0 / gamma * dst.block(2));  // Ct * invW * lambda
+    temp += gamma * C_T_term;
+
+    // 3. Compute the first block (3rd inverse application: A11_inv)
+    dst.block(0) = A11_inv * temp;
   }
 
   LinearOperator<Vector<double>> A11_inv;
@@ -508,7 +514,7 @@ void EllipticInterfaceDLM<dim, fe_degree>::solve() {
             << difference_constraints.linfty_norm() << "\n";
 
   // Estimate condition number
-  std::cout << "Estimate condition number of BBt using CG" << std::endl;
+  std::cout << "Estimate condition number of CCt using CG" << std::endl;
   Vector<double> v_eig(system_solution_block.block(1));
   SolverControl solver_control_eig(v_eig.size(), 1e-12, false);
   SolverCG<Vector<double>> solver_eigs(solver_control_eig);
@@ -571,11 +577,11 @@ int main(int argc, char *argv[]) {
   // solver.solve();
   // solver.output_results();
 
-  for (unsigned int ref_cycle = n_refinements; ref_cycle < n_refinements + 7;
+  for (unsigned int ref_cycle = n_refinements; ref_cycle < n_refinements + 8;
        ++ref_cycle) {
     std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" << std::endl;
     std::cout << "Refinement cycle: " << ref_cycle << std::endl;
-    gamma_AL /= std::sqrt(2.);
+    gamma_AL /= std::sqrt(2.);  // using sqrt(2)-rule from modified-AL paper.
     std::cout << "gamma_AL= " << gamma_AL << std::endl;
     EllipticInterfaceDLM<dim, degree> solver(ref_cycle, gamma_AL);
     solver.system_setup();
