@@ -86,8 +86,9 @@ class ProblemParameters : public ParameterAcceptor {
   bool use_sqrt_2_rule = false;
 
   // AL parameter. Its magnitude depends on which AL preconditioner (original
-  // vs. modified AL) is chosen.
-  double gamma_AL = 10.;
+  // vs. modified AL) is chosen. We define it as mutable since with modified AL
+  // its value may change upon mesh refinement.
+  mutable double gamma_AL = 10.;
 
   mutable ParameterAcceptorProxy<Functions::ParsedFunction<dim>>
       rhs;  //(f,f_2,0)
@@ -175,10 +176,10 @@ class EllipticInterfaceDLM {
 
   void system_setup();
 
-  void setup_stiffnesss(const DoFHandler<dim> &dof_handler,
-                        AffineConstraints<double> &constraints,
-                        SparsityPattern &stiffness_sparsity,
-                        SparseMatrix<Number> &stiffness_matrix) const;
+  void setup_stiffness_matrix(const DoFHandler<dim> &dof_handler,
+                              AffineConstraints<double> &constraints,
+                              SparsityPattern &stiffness_sparsity,
+                              SparseMatrix<Number> &stiffness_matrix) const;
 
   void setup_coupling();
 
@@ -194,6 +195,8 @@ class EllipticInterfaceDLM {
   void solve();
 
   void output_results() const;
+
+  void run();
 
  private:
   const ProblemParameters<dim> &parameters;
@@ -319,6 +322,9 @@ void EllipticInterfaceDLM<dim>::system_setup() {
   dof_handler_bg.distribute_dofs(fe_bg);
   dof_handler_fg.distribute_dofs(fe_fg);
 
+  constraints_bg.clear();
+  constraints_fg.clear();
+
   for (const types::boundary_id id : {0, 1, 2, 3}) {
     VectorTools::interpolate_boundary_values(
         dof_handler_bg, id, Functions::ZeroFunction<dim>(), constraints_bg);
@@ -327,11 +333,11 @@ void EllipticInterfaceDLM<dim>::system_setup() {
   constraints_bg.close();
   constraints_fg.close();
 
-  setup_stiffnesss(dof_handler_bg, constraints_bg, stiffness_sparsity_bg,
-                   stiffness_matrix_bg);
+  setup_stiffness_matrix(dof_handler_bg, constraints_bg, stiffness_sparsity_bg,
+                         stiffness_matrix_bg);
 
-  setup_stiffnesss(dof_handler_fg, constraints_fg, stiffness_sparsity_fg,
-                   stiffness_matrix_fg);
+  setup_stiffness_matrix(dof_handler_fg, constraints_fg, stiffness_sparsity_fg,
+                         stiffness_matrix_fg);
 
   mass_matrix_bg.reinit(stiffness_sparsity_bg);
   mass_matrix_fg.reinit(stiffness_sparsity_fg);
@@ -350,7 +356,7 @@ void EllipticInterfaceDLM<dim>::system_setup() {
 }
 
 template <int dim>
-void EllipticInterfaceDLM<dim>::setup_stiffnesss(
+void EllipticInterfaceDLM<dim>::setup_stiffness_matrix(
     const DoFHandler<dim> &dof_handler, AffineConstraints<double> &constraints,
     SparsityPattern &stiffness_sparsity,
     SparseMatrix<Number> &stiffness_matrix) const {
@@ -723,40 +729,38 @@ void EllipticInterfaceDLM<dim>::output_results() const {
   }
 }
 
+template <int dim>
+void EllipticInterfaceDLM<dim>::run() {
+  for (unsigned int ref_cycle = 0; ref_cycle < parameters.n_cycles;
+       ++ref_cycle) {
+    std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" << std::endl;
+    std::cout << "Refinement cycle: " << ref_cycle << std::endl;
+    std::cout << "gamma_AL= " << parameters.gamma_AL << std::endl;
+    // Create the grids only during the first refinement cycle
+    if (ref_cycle == 0) {
+      generate_grids();
+    } else {
+      // Otherwise, refine them globally.
+      tria_bg.refine_global(1);
+      tria_fg.refine_global(1);
+    }
+
+    system_setup();
+    setup_coupling();
+    assemble();
+    solve();
+    if (parameters.use_sqrt_2_rule)
+      parameters.gamma_AL /= std::sqrt(2.);  // using sqrt(2)-rule from
+                                             // modified-AL paper.
+    output_results();
+  }
+}
+
 int main(int argc, char *argv[]) {
   try {
     const int dim = 2;
     Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
     deallog.depth_console(10);
-
-    // const unsigned int n_refinements =
-    //     argc == 1 ? 2 : std::strtol(argv[1], NULL, 10);
-
-    // double gamma_AL = 1e-2;  // gamma_0, determined with a coarse solve.
-
-    // EllipticInterfaceDLM<dim, degree> solver(n_refinements, gamma_AL);
-    //   solver.generate_grids();
-    // solver.system_setup();
-    // solver.setup_coupling();
-    // solver.assemble();
-    // solver.solve();
-    // solver.output_results();
-
-    // for (unsigned int ref_cycle = n_refinements; ref_cycle < n_refinements +
-    // 8;
-    //      ++ref_cycle) {
-    //   std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" <<
-    //   std::endl; std::cout << "Refinement cycle: " << ref_cycle << std::endl;
-    //   gamma_AL /= std::sqrt(2.);  // using sqrt(2)-rule from modified-AL
-    //   paper. std::cout << "gamma_AL= " << gamma_AL << std::endl;
-    //   EllipticInterfaceDLM<dim> solver();
-    //   solver.generate_grids();
-    //   solver.system_setup();
-    //   solver.setup_coupling();
-    //   solver.assemble();
-    //   solver.solve();
-    //   solver.output_results();
-    // }
 
     ProblemParameters<dim> parameters;
     std::string parameter_file;
@@ -767,13 +771,7 @@ int main(int argc, char *argv[]) {
     ParameterAcceptor::initialize(parameter_file, "used_parameters.prm");
 
     EllipticInterfaceDLM<dim> solver(parameters);
-
-    solver.generate_grids();
-    solver.system_setup();
-    solver.setup_coupling();
-    solver.assemble();
-    solver.solve();
-    solver.output_results();
+    solver.run();
   } catch (std::exception &exc) {
     std::cerr << std::endl
               << std::endl
