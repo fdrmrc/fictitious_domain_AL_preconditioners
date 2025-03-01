@@ -92,12 +92,15 @@ class ProblemParameters : public ParameterAcceptor {
 
   mutable ParameterAcceptorProxy<Functions::ParsedFunction<dim>>
       rhs;  //(f,f_2,0)
+
+  mutable ParameterAcceptorProxy<ReductionControl> outer_solver_control;
 };
 
 template <int dim>
 ProblemParameters<dim>::ProblemParameters()
     : ParameterAcceptor("Elliptic Interface Problem/"),
-      rhs("Right hand side", dim + 1) {
+      rhs("Right hand side", dim + 1),
+      outer_solver_control("Outer solver control") {
   add_parameter("FE degree background", background_space_finite_element_degree,
                 "", this->prm, Patterns::Integer(1));
 
@@ -154,6 +157,14 @@ ProblemParameters<dim>::ProblemParameters()
 
   rhs.declare_parameters_call_back.connect([&]() {
     Functions::ParsedFunction<dim>::declare_parameters(this->prm, dim + 1);
+  });
+
+  outer_solver_control.declare_parameters_call_back.connect([]() -> void {
+    ParameterAcceptor::prm.set("Max steps", "1000");
+    ParameterAcceptor::prm.set("Reduction", "1.e-6");
+    ParameterAcceptor::prm.set("Tolerance", "1.e-9");
+    ParameterAcceptor::prm.set("Log history", "true");
+    ParameterAcceptor::prm.set("Log result", "true");
   });
 }
 
@@ -426,8 +437,9 @@ void output_double_number(double input, const std::string &text) {
 
 template <int dim>
 void EllipticInterfaceDLM<dim>::solve() {
-  SparseDirectUMFPACK Af_inv_umfpack;
-  Af_inv_umfpack.initialize(stiffness_matrix_bg);  // Ainv
+  // SparseDirectUMFPACK Af_inv_umfpack;
+  // Af_inv_umfpack.initialize(stiffness_matrix_bg);  // Ainv
+  // auto Af_inv = linear_operator(stiffness_matrix_bg, Af_inv_umfpack);
 
   SparseDirectUMFPACK M_inv_umfpack;
   M_inv_umfpack.initialize(mass_matrix_fg);  // inverse immersed mass matrix
@@ -440,7 +452,6 @@ void EllipticInterfaceDLM<dim>::solve() {
   auto NullCouplin = null_operator(linear_operator(coupling_matrix));
   auto Ct = linear_operator(coupling_matrix);
   auto C = transpose_operator(Ct);
-  auto Af_inv = linear_operator(stiffness_matrix_bg, Af_inv_umfpack);
 
   SolverControl control_lagrangian(40000, 1e-4, false, true);
   SolverCG<BlockVector<double>> solver_lagrangian(control_lagrangian);
@@ -471,8 +482,8 @@ void EllipticInterfaceDLM<dim>::solve() {
         {{A21_aug, A22_aug, -1. * M}},
         {{C, -1. * M, NullCouplin}}}});  // augmented the 2x2 top left block!
 
-  SolverControl outer_control(10000, 1e-6, true, true);
-  SolverFGMRES<BlockVector<Number>> solver_fgmres(outer_control);
+  SolverFGMRES<BlockVector<Number>> solver_fgmres(
+      parameters.outer_solver_control);
 
   TrilinosWrappers::PreconditionAMG amg_prec_A11;
   amg_prec_A11.initialize(stiffness_matrix_bg);
@@ -482,6 +493,12 @@ void EllipticInterfaceDLM<dim>::solve() {
   auto AMG_A2 = linear_operator(stiffness_matrix_fg, amg_prec_A22);
 
   if (parameters.use_modified_AL_preconditioner) {
+    // If we use the modified AL preconditioner, we check if we use a small
+    // value of gamma.
+    AssertThrow(
+        parameters.gamma_AL < 1.,
+        ExcMessage("gamma_AL is too large for modified AL preconditioner."));
+
     SolverCG<Vector<double>> solver_lagrangian_scalar(control_lagrangian);
     // Define block preconditioner using AL approach
     auto A11_aug_inv =
@@ -495,6 +512,11 @@ void EllipticInterfaceDLM<dim>::solve() {
     solver_fgmres.solve(system_operator, system_solution_block,
                         system_rhs_block, preconditioner_AL);
   } else {
+    // Check that gamma is not too small
+    AssertThrow(parameters.gamma_AL > 1.,
+                ExcMessage("Parameter gamma is probably small for classical AL "
+                           "preconditioner."));
+
     // Define preconditioner for the augmented block
     auto prec_aug = block_operator<2, 2, BlockVector<double>>(
         {{{{AMG_A1, NullF}}, {{NullS, AMG_A2}}}});
@@ -512,8 +534,10 @@ void EllipticInterfaceDLM<dim>::solve() {
 
   system_rhs_block.block(2) = 0;  // last row of the rhs is 0
 
-  std::cout << "Solved in " << outer_control.last_step() << " iterations"
-            << (outer_control.last_step() < 10 ? "  " : " ") << "\n";
+  std::cout << "Solved in " << parameters.outer_solver_control.last_step()
+            << " iterations"
+            << (parameters.outer_solver_control.last_step() < 10 ? "  " : " ")
+            << "\n";
 
   // Do some sanity checks: Check the constraints residual and the condition
   // number of CCt.
@@ -579,7 +603,7 @@ template <int dim>
 void EllipticInterfaceDLM<dim>::run() {
   for (unsigned int ref_cycle = 0; ref_cycle < parameters.n_refinement_cycles;
        ++ref_cycle) {
-    std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" << std::endl;8
+    std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" << std::endl;
     std::cout << "Refinement cycle: " << ref_cycle << std::endl;
     std::cout << "gamma_AL= " << parameters.gamma_AL << std::endl;
     // Create the grids only during the first refinement cycle
