@@ -2,6 +2,7 @@
 #include <deal.II/base/logstream.h>
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/parameter_acceptor.h>
+#include <deal.II/base/parameter_handler.h>
 #include <deal.II/base/parsed_function.h>
 #include <deal.II/base/timer.h>
 #include <deal.II/base/utilities.h>
@@ -33,6 +34,7 @@
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
 
+#include <exception>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -40,18 +42,136 @@
 
 using namespace dealii;
 
-static constexpr double beta_2 = 10.;
+// Class
+template <int dim>
+class ProblemParameters : public ParameterAcceptor {
+ public:
+  ProblemParameters();
 
-template <int dim, int fe_degree>
+  std::string output_directory = ".";
+
+  // Number of refinement steps for background...
+  unsigned int initial_background_refinement = 4;
+  // ... and immersed grid.
+  unsigned int initial_immersed_refinement = 2;
+
+  std::string name_of_background_grid = "hyper_cube";
+  std::string arguments_for_background_grid = "-1: 1: true";
+  std::string name_of_immersed_grid = "hyper_cube";
+  std::string arguments_for_immersed_grid = "-0.14: 0.44: true";
+
+  // Number of refinement cycles
+  unsigned int n_cycles = 5;
+
+  // Coefficients determining the size of the jump. beta_1 is usually kept at 1.
+  double beta_1 = 1.;
+
+  // beta_2, instead, is the one which is changed.
+  double beta_2 = 10.;
+
+  std::list<types::boundary_id> dirichlet_ids{0, 1, 2, 3};
+
+  unsigned int background_space_finite_element_degree = 1;
+
+  unsigned int immersed_space_finite_element_degree = 1;
+
+  unsigned int coupling_quadrature_order = 3;
+
+  unsigned int verbosity_level = 10;
+
+  std::string outer_solver = "FGMRES";
+
+  bool use_diagonal = false;
+
+  bool use_sqrt_2_rule = false;
+
+  // AL parameter. Its magnitude depends on which AL preconditioner (original
+  // vs. modified AL) is chosen.
+  double gamma_AL = 10.;
+
+  mutable ParameterAcceptorProxy<Functions::ParsedFunction<dim>>
+      rhs;  //(f,f_2,0)
+};
+
+template <int dim>
+ProblemParameters<dim>::ProblemParameters()
+    : ParameterAcceptor("Elliptic Interface Problem/"),
+      rhs("Right hand side", dim + 1) {
+  add_parameter("Background FE degree", background_space_finite_element_degree,
+                "", this->prm, Patterns::Integer(1));
+
+  add_parameter("Immersed FE degree", immersed_space_finite_element_degree, "",
+                this->prm, Patterns::Integer(1));
+
+  add_parameter("Coupling quadrature order", coupling_quadrature_order);
+
+  add_parameter("Output directory", output_directory);
+
+  add_parameter("Beta_1", beta_1);
+  add_parameter("Beta_2", beta_2);
+
+  add_parameter("Homogeneous Dirichlet boundary ids", dirichlet_ids);
+
+  enter_subsection("Grid generation");
+  {
+    add_parameter("Background grid generator", name_of_background_grid);
+    add_parameter("Background grid generator arguments",
+                  arguments_for_background_grid);
+    add_parameter("Immersed grid generator", name_of_immersed_grid);
+    add_parameter("Immersed grid generator arguments",
+                  arguments_for_immersed_grid);
+  }
+  leave_subsection();
+
+  enter_subsection("Refinement and remeshing");
+  {
+    add_parameter(
+        "Initial background refinement", initial_background_refinement,
+        "Initial number of refinements used for the background domain Omega");
+    add_parameter(
+        "Initial immersed refinement", initial_immersed_refinement,
+        "Initial number of refinements used for the immersed domain Gamma");
+    add_parameter("Refinemented cycles", n_cycles,
+                  "Number of refinement cycles to perform. Useful if you want "
+                  "to study convergence.");
+  }
+  leave_subsection();
+
+  enter_subsection("AL preconditioner");
+  {
+    add_parameter("Outer solver", outer_solver);
+    add_parameter("Use diagonal", use_diagonal,
+                  "Use diagonal approximation of mass matrices.");
+    add_parameter("Verbosity level", verbosity_level);
+  }
+  leave_subsection();
+
+  // Parameters for the modified AL
+  enter_subsection("Modified AL preconditioner");
+  {
+    add_parameter("Outer solver", outer_solver);
+    add_parameter("Use diagonal", use_diagonal,
+                  "Use diagonal approximation of mass matrices.");
+    add_parameter("Use sqrt(2)-rule for gamma", use_sqrt_2_rule);
+    add_parameter("gamma", gamma_AL);
+    add_parameter("Verbosity level", verbosity_level);
+  }
+  leave_subsection();
+
+  rhs.declare_parameters_call_back.connect([&]() {
+    Functions::ParsedFunction<dim>::declare_parameters(this->prm, dim + 1);
+  });
+}
+
+// The real class of the ellitpic interface problem.
+template <int dim>
 class EllipticInterfaceDLM {
  public:
   typedef double Number;
 
-  const constexpr static unsigned int degree_u = fe_degree;
-  const constexpr static unsigned int degree_p = fe_degree;
+  EllipticInterfaceDLM(const ProblemParameters<dim> &prm);
 
-  EllipticInterfaceDLM(const unsigned int &n_refinements = 2,
-                       const double gamma_AL = 1.);
+  void generate_grids();
 
   void system_setup();
 
@@ -76,14 +196,16 @@ class EllipticInterfaceDLM {
   void output_results() const;
 
  private:
+  const ProblemParameters<dim> &parameters;
   Triangulation<dim> tria_bg;
   Triangulation<dim> tria_fg;
-  FE_Q<dim> fe_bg;
-  FE_Q<dim> fe_fg;
+
   std::shared_ptr<Mapping<dim>> mapping;
 
   DoFHandler<dim> dof_handler_bg;
   DoFHandler<dim> dof_handler_fg;
+  FE_Q<dim> fe_bg;
+  FE_Q<dim> fe_fg;
 
   AffineConstraints<double> constraints_bg;
   AffineConstraints<double> constraints_fg;
@@ -102,30 +224,75 @@ class EllipticInterfaceDLM {
 
   BlockVector<Number> system_rhs_block;
   BlockVector<Number> system_solution_block;
-
-  double gamma_AL;
 };
 
-template <int dim, int fe_degree>
-EllipticInterfaceDLM<dim, fe_degree>::EllipticInterfaceDLM(
-    const unsigned int &n_refinements, const double gamma_AL_)
-    : fe_bg(fe_degree),
-      fe_fg(fe_degree),
+template <int dim>
+EllipticInterfaceDLM<dim>::EllipticInterfaceDLM(
+    const ProblemParameters<dim> &prm)
+    : parameters(prm),
       dof_handler_bg(tria_bg),
       dof_handler_fg(tria_fg),
-      gamma_AL(gamma_AL_) {
+      fe_bg(parameters.background_space_finite_element_degree),
+      fe_fg(parameters.immersed_space_finite_element_degree) {
   static_assert(dim == 2);
 
-  GridGenerator::hyper_cube(tria_bg, -1., 1., true);
-  GridGenerator::hyper_cube(tria_fg, -0.14, .44, true);
-  // GridGenerator::hyper_ball(tria_fg, Point<dim>(), 0.5, true);
+  // Old manual way. TODO: remove once you have it working
+  // GridGenerator::hyper_cube(tria_bg, -1., 1., true);
+  // GridGenerator::hyper_cube(tria_fg, -0.14, .44, true);
+  // // GridGenerator::hyper_ball(tria_fg, Point<dim>(), 0.5, true);
 
-  // tria_bg.refine_global(n_refinements + 3);
-  tria_bg.refine_global(n_refinements + 2);
-  tria_fg.refine_global(n_refinements);
+  // // tria_bg.refine_global(n_refinements + 3);
+  // tria_bg.refine_global(n_refinements + 2);
+  // tria_fg.refine_global(n_refinements);
 
-  // Check mesh sizes. We try to verify they are not too differen by using
-  // suitable safety factors.
+  // // Check mesh sizes. We try to verify they are not too differen by using
+  // // suitable safety factors.
+  // const double h_background = GridTools::maximal_cell_diameter(tria_bg);
+  // const double h_immersed = GridTools::maximal_cell_diameter(tria_fg);
+  // const double ratio = h_immersed / h_background;
+  // std::cout << "h background = " << h_background << "\n"
+  //           << "h immersed = " << h_immersed << "\n"
+  //           << "grids ratio = " << ratio << std::endl;
+
+  // const double safety_factor = 1.2;
+  // AssertThrow((ratio) < safety_factor || (ratio) > 0.7,
+  //             ExcMessage("Check mesh sizes of the two grids."));
+
+  // // Do not dump grid to disk if meshes too large
+  // if (tria_bg.n_active_cells() < 1e3) {
+  //   std::ofstream bg_out("background_grid.vtk");
+  //   std::ofstream fg_out("immersed_grid.vtk");
+  //   GridOut grid_out;
+  //   grid_out.write_vtk(tria_bg, bg_out);
+  //   grid_out.write_vtk(tria_fg, fg_out);
+  // }
+}
+
+// Generate the grids for the background and immersed domains
+template <int dim>
+void EllipticInterfaceDLM<dim>::generate_grids() {
+  try {
+    GridGenerator::generate_from_name_and_arguments(
+        tria_bg, parameters.name_of_background_grid,
+        parameters.arguments_for_background_grid);
+    tria_bg.refine_global(parameters.initial_background_refinement);
+  } catch (const std::exception &exc) {
+    std::cerr << exc.what() << std::endl;
+    std::cerr << "Error in background grid generation. Aborting." << std::endl;
+  }
+
+  try {
+    GridGenerator::generate_from_name_and_arguments(
+        tria_fg, parameters.name_of_immersed_grid,
+        parameters.arguments_for_immersed_grid);
+    tria_fg.refine_global(parameters.initial_immersed_refinement);
+  } catch (const std::exception &exc) {
+    std::cerr << exc.what() << std::endl;
+    std::cerr << "Error in immersed grid generation. Aborting." << std::endl;
+  }
+
+  // Now check mesh sizes. We verify they are not too different by using safety
+  // factors.
   const double h_background = GridTools::maximal_cell_diameter(tria_bg);
   const double h_immersed = GridTools::maximal_cell_diameter(tria_fg);
   const double ratio = h_immersed / h_background;
@@ -134,7 +301,7 @@ EllipticInterfaceDLM<dim, fe_degree>::EllipticInterfaceDLM(
             << "grids ratio = " << ratio << std::endl;
 
   const double safety_factor = 1.2;
-  AssertThrow((ratio) < safety_factor || (ratio) > 0.7,
+  AssertThrow(ratio < safety_factor && ratio > 0.7,
               ExcMessage("Check mesh sizes of the two grids."));
 
   // Do not dump grid to disk if meshes too large
@@ -147,8 +314,8 @@ EllipticInterfaceDLM<dim, fe_degree>::EllipticInterfaceDLM(
   }
 }
 
-template <int dim, int fe_degree>
-void EllipticInterfaceDLM<dim, fe_degree>::system_setup() {
+template <int dim>
+void EllipticInterfaceDLM<dim>::system_setup() {
   dof_handler_bg.distribute_dofs(fe_bg);
   dof_handler_fg.distribute_dofs(fe_fg);
 
@@ -182,8 +349,8 @@ void EllipticInterfaceDLM<dim, fe_degree>::system_setup() {
   std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" << std::endl;
 }
 
-template <int dim, int fe_degree>
-void EllipticInterfaceDLM<dim, fe_degree>::setup_stiffnesss(
+template <int dim>
+void EllipticInterfaceDLM<dim>::setup_stiffnesss(
     const DoFHandler<dim> &dof_handler, AffineConstraints<double> &constraints,
     SparsityPattern &stiffness_sparsity,
     SparseMatrix<Number> &stiffness_matrix) const {
@@ -193,9 +360,9 @@ void EllipticInterfaceDLM<dim, fe_degree>::setup_stiffnesss(
   stiffness_matrix.reinit(stiffness_sparsity);
 }
 
-template <int dim, int fe_degree>
-void EllipticInterfaceDLM<dim, fe_degree>::setup_coupling() {
-  QGauss<dim> quad(fe_degree + 1);
+template <int dim>
+void EllipticInterfaceDLM<dim>::setup_coupling() {
+  QGauss<dim> quad(fe_bg.degree + 1);
 
   {
     DynamicSparsityPattern dsp(dof_handler_bg.n_dofs(),
@@ -212,8 +379,8 @@ void EllipticInterfaceDLM<dim, fe_degree>::setup_coupling() {
   }
 }
 
-template <int dim, int fe_degree>
-void EllipticInterfaceDLM<dim, fe_degree>::assemble_subsystem(
+template <int dim>
+void EllipticInterfaceDLM<dim>::assemble_subsystem(
     const FiniteElement<dim> &fe, const DoFHandler<dim> &dof_handler,
     const AffineConstraints<double> &constraints,
     SparseMatrix<Number> &system_matrix, Vector<Number> &system_rhs, double rho,
@@ -259,25 +426,22 @@ void EllipticInterfaceDLM<dim, fe_degree>::assemble_subsystem(
   }
 }
 
-template <int dim, int fe_degree>
-void EllipticInterfaceDLM<dim, fe_degree>::assemble() {
-  const double beta_1 = 1;  // beta
-
-  // const double beta_2 = beta_2;  // beta_2
-
+template <int dim>
+void EllipticInterfaceDLM<dim>::assemble() {
   // background stiffness matrix A
   assemble_subsystem(fe_bg, dof_handler_bg, constraints_bg, stiffness_matrix_bg,
                      system_rhs_block.block(0),
-                     0.,      // 0, no mass matrix
-                     beta_1,  // only beta_1
-                     1.);     // rhs value, f1
+                     0.,                 // 0, no mass matrix
+                     parameters.beta_1,  // only beta_1 (which is usually 1)
+                     1.);                // rhs value, f1
 
   // immersed matrix A2 = (beta_2 - beta) (grad u,grad v)
-  assemble_subsystem(fe_fg, dof_handler_fg, constraints_fg, stiffness_matrix_fg,
-                     system_rhs_block.block(1),
-                     0.,               // 0, no mass matrix
-                     beta_2 - beta_1,  // only jump beta_2 - beta
-                     3.);              // rhs value, f2
+  assemble_subsystem(
+      fe_fg, dof_handler_fg, constraints_fg, stiffness_matrix_fg,
+      system_rhs_block.block(1),
+      0.,                                     // 0, no mass matrix
+      parameters.beta_2 - parameters.beta_1,  // only jump beta_2 - beta
+      3.);                                    // rhs value, f2
 
   // mass matrix background
   assemble_subsystem(fe_bg, dof_handler_bg, constraints_bg, mass_matrix_bg,
@@ -413,8 +577,8 @@ class BlockTriangularPreconditionerALModified {
   double gamma;
 };
 
-template <int dim, int fe_degree>
-void EllipticInterfaceDLM<dim, fe_degree>::solve() {
+template <int dim>
+void EllipticInterfaceDLM<dim>::solve() {
   SparseDirectUMFPACK Af_inv_umfpack;
   Af_inv_umfpack.initialize(stiffness_matrix_bg);  // Ainv
 
@@ -434,7 +598,6 @@ void EllipticInterfaceDLM<dim, fe_degree>::solve() {
   SolverControl control_lagrangian(40000, 1e-4, false, true);
   SolverCG<BlockVector<double>> solver_lagrangian(control_lagrangian);
 
-  // const double gamma_AL = 1e-2;  // gamma
   auto invW1 = linear_operator(mass_matrix_fg, M_inv_umfpack);
   auto invW = invW1 * invW1;  // W = M^{-2}
 
@@ -451,9 +614,9 @@ void EllipticInterfaceDLM<dim, fe_degree>::solve() {
 
   // Define augmented blocks. Notice that A22_aug is actually A_omega2 +
   // gamma_AL * Id
-  auto A11_aug = A_omega1 + gamma_AL * Ct * invW * C;
-  auto A22_aug = A_omega2 + gamma_AL * M * invW * M;
-  auto A12_aug = -gamma_AL * Ct * invW * M;
+  auto A11_aug = A_omega1 + parameters.gamma_AL * Ct * invW * C;
+  auto A22_aug = A_omega2 + parameters.gamma_AL * M * invW * M;
+  auto A12_aug = -parameters.gamma_AL * Ct * invW * M;
   auto A21_aug = transpose_operator(A12_aug);
 
   auto system_operator = block_operator<3, 3, BlockVector<double>>(
@@ -486,7 +649,7 @@ void EllipticInterfaceDLM<dim, fe_degree>::solve() {
       inverse_operator(A22_aug, solver_lagrangian_scalar, AMG_A2);
 
   BlockTriangularPreconditionerALModified preconditioner_AL(
-      C, M, invW, gamma_AL, A11_aug_inv, A22_aug_inv);
+      C, M, invW, parameters.gamma_AL, A11_aug_inv, A22_aug_inv);
   // BlockTriangularPreconditionerAL preconditioner_AL(Aug_inv, C, M, invW,
   //                                                   gamma_AL);
 
@@ -500,7 +663,8 @@ void EllipticInterfaceDLM<dim, fe_degree>::solve() {
   std::cout << "Solved in " << outer_control.last_step() << " iterations"
             << (outer_control.last_step() < 10 ? "  " : " ") << "\n";
 
-  // Do a sanity check
+  // Do some sanity checks: Check the constraints residual and the condition
+  // number of CCt.
   Vector<Number> difference_constraints = system_solution_block.block(2);
 
   coupling_matrix.Tvmult(difference_constraints,
@@ -538,8 +702,8 @@ void EllipticInterfaceDLM<dim, fe_degree>::solve() {
   }
 }
 
-template <int dim, int fe_degree>
-void EllipticInterfaceDLM<dim, fe_degree>::output_results() const {
+template <int dim>
+void EllipticInterfaceDLM<dim>::output_results() const {
   {
     DataOut<dim> data_out;
     data_out.attach_dof_handler(dof_handler_fg);
@@ -560,34 +724,79 @@ void EllipticInterfaceDLM<dim, fe_degree>::output_results() const {
 }
 
 int main(int argc, char *argv[]) {
-  const int dim = 2;
-  const int degree = 1;
-  Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
-  deallog.depth_console(10);
+  try {
+    const int dim = 2;
+    Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
+    deallog.depth_console(10);
 
-  const unsigned int n_refinements =
-      argc == 1 ? 2 : std::strtol(argv[1], NULL, 10);
+    // const unsigned int n_refinements =
+    //     argc == 1 ? 2 : std::strtol(argv[1], NULL, 10);
 
-  double gamma_AL = 1e-2;  // gamma_0, determined with a coarse solve.
+    // double gamma_AL = 1e-2;  // gamma_0, determined with a coarse solve.
 
-  // EllipticInterfaceDLM<dim, degree> solver(n_refinements, gamma_AL);
-  // solver.system_setup();
-  // solver.setup_coupling();
-  // solver.assemble();
-  // solver.solve();
-  // solver.output_results();
+    // EllipticInterfaceDLM<dim, degree> solver(n_refinements, gamma_AL);
+    //   solver.generate_grids();
+    // solver.system_setup();
+    // solver.setup_coupling();
+    // solver.assemble();
+    // solver.solve();
+    // solver.output_results();
 
-  for (unsigned int ref_cycle = n_refinements; ref_cycle < n_refinements + 8;
-       ++ref_cycle) {
-    std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" << std::endl;
-    std::cout << "Refinement cycle: " << ref_cycle << std::endl;
-    gamma_AL /= std::sqrt(2.);  // using sqrt(2)-rule from modified-AL paper.
-    std::cout << "gamma_AL= " << gamma_AL << std::endl;
-    EllipticInterfaceDLM<dim, degree> solver(ref_cycle, gamma_AL);
+    // for (unsigned int ref_cycle = n_refinements; ref_cycle < n_refinements +
+    // 8;
+    //      ++ref_cycle) {
+    //   std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" <<
+    //   std::endl; std::cout << "Refinement cycle: " << ref_cycle << std::endl;
+    //   gamma_AL /= std::sqrt(2.);  // using sqrt(2)-rule from modified-AL
+    //   paper. std::cout << "gamma_AL= " << gamma_AL << std::endl;
+    //   EllipticInterfaceDLM<dim> solver();
+    //   solver.generate_grids();
+    //   solver.system_setup();
+    //   solver.setup_coupling();
+    //   solver.assemble();
+    //   solver.solve();
+    //   solver.output_results();
+    // }
+
+    ProblemParameters<dim> parameters;
+    std::string parameter_file;
+    if (argc > 1)
+      parameter_file = argv[1];
+    else
+      parameter_file = "parameters_elliptic_interface.prm";
+    ParameterAcceptor::initialize(parameter_file, "used_parameters.prm");
+
+    EllipticInterfaceDLM<dim> solver(parameters);
+
+    solver.generate_grids();
     solver.system_setup();
     solver.setup_coupling();
     solver.assemble();
     solver.solve();
     solver.output_results();
+  } catch (std::exception &exc) {
+    std::cerr << std::endl
+              << std::endl
+              << "----------------------------------------------------"
+              << std::endl;
+    std::cerr << "Exception on processing: " << std::endl
+              << exc.what() << std::endl
+              << "Aborting!" << std::endl
+              << "----------------------------------------------------"
+              << std::endl;
+
+    return 1;
+  } catch (...) {
+    std::cerr << std::endl
+              << std::endl
+              << "----------------------------------------------------"
+              << std::endl;
+    std::cerr << "Unknown exception!" << std::endl
+              << "Aborting!" << std::endl
+              << "----------------------------------------------------"
+              << std::endl;
+    return 1;
   }
+
+  return 0;
 }
