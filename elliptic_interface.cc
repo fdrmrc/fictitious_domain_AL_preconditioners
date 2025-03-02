@@ -242,6 +242,8 @@ class EllipticInterfaceDLM {
 
   BlockVector<Number> system_rhs_block;
   BlockVector<Number> system_solution_block;
+
+  mutable TimerOutput computing_timer;
 };
 
 template <int dim>
@@ -251,13 +253,18 @@ EllipticInterfaceDLM<dim>::EllipticInterfaceDLM(
       dof_handler_bg(tria_bg),
       dof_handler_fg(tria_fg),
       fe_bg(parameters.background_space_finite_element_degree),
-      fe_fg(parameters.immersed_space_finite_element_degree) {
+      fe_fg(parameters.immersed_space_finite_element_degree),
+      computing_timer(MPI_COMM_WORLD, std::cout,
+                      TimerOutput::every_call_and_summary,
+                      TimerOutput::wall_times) {
   static_assert(dim == 2);
 }
 
 // Generate the grids for the background and immersed domains
 template <int dim>
 void EllipticInterfaceDLM<dim>::generate_grids() {
+  TimerOutput::Scope t(computing_timer, "Grid generation");
+
   try {
     GridGenerator::generate_from_name_and_arguments(
         tria_bg, parameters.name_of_background_grid,
@@ -303,6 +310,8 @@ void EllipticInterfaceDLM<dim>::generate_grids() {
 
 template <int dim>
 void EllipticInterfaceDLM<dim>::system_setup() {
+  TimerOutput::Scope t(computing_timer, "System setup");
+
   dof_handler_bg.distribute_dofs(fe_bg);
   dof_handler_fg.distribute_dofs(fe_fg);
 
@@ -352,6 +361,8 @@ void EllipticInterfaceDLM<dim>::setup_stiffness_matrix(
 
 template <int dim>
 void EllipticInterfaceDLM<dim>::setup_coupling() {
+  TimerOutput::Scope t(computing_timer, "Coupling setup");
+
   QGauss<dim> quad(fe_bg.degree + 1);
 
   {
@@ -418,6 +429,8 @@ void EllipticInterfaceDLM<dim>::assemble_subsystem(
 
 template <int dim>
 void EllipticInterfaceDLM<dim>::assemble() {
+  TimerOutput::Scope t(computing_timer, "Assemble matrices");
+
   // background stiffness matrix A
   assemble_subsystem(fe_bg, dof_handler_bg, constraints_bg, stiffness_matrix_bg,
                      system_rhs_block.block(0),
@@ -504,45 +517,49 @@ void EllipticInterfaceDLM<dim>::solve() {
   amg_prec_A22.initialize(stiffness_matrix_fg);
   auto AMG_A2 = linear_operator(stiffness_matrix_fg, amg_prec_A22);
 
-  if (parameters.use_modified_AL_preconditioner) {
-    // If we use the modified AL preconditioner, we check if we use a small
-    // value of gamma.
-    AssertThrow(
-        parameters.gamma_AL < 1.,
-        ExcMessage("gamma_AL is too large for modified AL preconditioner."));
+  {
+    TimerOutput::Scope t(computing_timer, "Solve system");
+    if (parameters.use_modified_AL_preconditioner) {
+      // If we use the modified AL preconditioner, we check if we use a small
+      // value of gamma.
+      AssertThrow(
+          parameters.gamma_AL < 1.,
+          ExcMessage("gamma_AL is too large for modified AL preconditioner."));
 
-    SolverCG<Vector<double>> solver_lagrangian_scalar(
-        parameters.inner_solver_control);
-    // Define block preconditioner using AL approach
-    auto A11_aug_inv =
-        inverse_operator(A11_aug, solver_lagrangian_scalar, AMG_A1);
-    auto A22_aug_inv =
-        inverse_operator(A22_aug, solver_lagrangian_scalar, AMG_A2);
+      SolverCG<Vector<double>> solver_lagrangian_scalar(
+          parameters.inner_solver_control);
+      // Define block preconditioner using AL approach
+      auto A11_aug_inv =
+          inverse_operator(A11_aug, solver_lagrangian_scalar, AMG_A1);
+      auto A22_aug_inv =
+          inverse_operator(A22_aug, solver_lagrangian_scalar, AMG_A2);
 
-    EllipticInterfacePreconditioners::BlockTriangularALPreconditionerModified
-        preconditioner_AL(C, M, invW, parameters.gamma_AL, A11_aug_inv,
-                          A22_aug_inv);
-    solver_fgmres.solve(system_operator, system_solution_block,
-                        system_rhs_block, preconditioner_AL);
-  } else {
-    // Check that gamma is not too small
-    AssertThrow(parameters.gamma_AL > 1.,
-                ExcMessage("Parameter gamma is probably small for classical AL "
-                           "preconditioner."));
+      EllipticInterfacePreconditioners::BlockTriangularALPreconditionerModified
+          preconditioner_AL(C, M, invW, parameters.gamma_AL, A11_aug_inv,
+                            A22_aug_inv);
+      solver_fgmres.solve(system_operator, system_solution_block,
+                          system_rhs_block, preconditioner_AL);
+    } else {
+      // Check that gamma is not too small
+      AssertThrow(
+          parameters.gamma_AL > 1.,
+          ExcMessage("Parameter gamma is probably small for classical AL "
+                     "preconditioner."));
 
-    // Define preconditioner for the augmented block
-    auto prec_aug = block_operator<2, 2, BlockVector<double>>(
-        {{{{AMG_A1, NullF}}, {{NullS, AMG_A2}}}});
-    PreconditionIdentity prec_id;
-    auto Aug = block_operator<2, 2, BlockVector<double>>(
-        {{{{A11_aug, A12_aug}},
-          {{A21_aug, A22_aug}}}});  // augmented block to be inverted
-    auto Aug_inv = inverse_operator(Aug, solver_lagrangian, prec_aug);
+      // Define preconditioner for the augmented block
+      auto prec_aug = block_operator<2, 2, BlockVector<double>>(
+          {{{{AMG_A1, NullF}}, {{NullS, AMG_A2}}}});
+      PreconditionIdentity prec_id;
+      auto Aug = block_operator<2, 2, BlockVector<double>>(
+          {{{{A11_aug, A12_aug}},
+            {{A21_aug, A22_aug}}}});  // augmented block to be inverted
+      auto Aug_inv = inverse_operator(Aug, solver_lagrangian, prec_aug);
 
-    EllipticInterfacePreconditioners::BlockTriangularALPreconditioner
-        preconditioner_AL(Aug_inv, C, M, invW, parameters.gamma_AL);
-    solver_fgmres.solve(system_operator, system_solution_block,
-                        system_rhs_block, preconditioner_AL);
+      EllipticInterfacePreconditioners::BlockTriangularALPreconditioner
+          preconditioner_AL(Aug_inv, C, M, invW, parameters.gamma_AL);
+      solver_fgmres.solve(system_operator, system_solution_block,
+                          system_rhs_block, preconditioner_AL);
+    }
   }
 
   system_rhs_block.block(2) = 0;  // last row of the rhs is 0
@@ -593,6 +610,8 @@ void EllipticInterfaceDLM<dim>::solve() {
 
 template <int dim>
 void EllipticInterfaceDLM<dim>::output_results() const {
+  TimerOutput::Scope t(computing_timer, "Output results");
+
   {
     DataOut<dim> data_out;
     data_out.attach_dof_handler(dof_handler_fg);
