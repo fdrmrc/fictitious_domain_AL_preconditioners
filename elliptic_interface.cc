@@ -300,12 +300,14 @@ EllipticInterfaceDLM<dim>::EllipticInterfaceDLM(
 
   // Check that some settings are used only when modified AL preconditioner is
   // selected.
-  AssertThrow(parameters.do_parameter_study &&
-                  parameters.use_modified_AL_preconditioner,
-              ExcMessage("Parameter study makes sense only if you use modified "
-                         "AL preconditioner."));
+  if (parameters.do_parameter_study)
+    AssertThrow(
+        parameters.use_modified_AL_preconditioner,
+        ExcMessage(
+            "Parameter study for gamma makes sense only if you use modified "
+            "AL preconditioner."));
   AssertThrow(
-      parameters.use_sqrt_2_rule && parameters.use_modified_AL_preconditioner,
+      parameters.use_sqrt_2_rule == parameters.use_modified_AL_preconditioner,
       ExcMessage("The so-called sqrt(2)-rule makes sense only if you "
                  "use the modified AL preconditioner."));
 }
