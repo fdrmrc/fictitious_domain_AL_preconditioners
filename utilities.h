@@ -1,11 +1,13 @@
 #ifndef utilities_h
 #define utilities_h
 
+#include <deal.II/base/exceptions.h>
 #include <deal.II/base/logstream.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/sparsity_pattern.h>
 #include <deal.II/lac/utilities.h>
 #include <deal.II/lac/vector.h>
+#include <deal.II/numerics/matrix_tools.h>
 
 #include <type_traits>
 
@@ -317,6 +319,21 @@ void build_AMG_augmented_block(
 
   export_to_matlab_csv(augmented_block, "augmented_matrix_stokes.csv");
   export_sparse_to_matlab_csv(augmented_block, "augmented_matrix_stokes.txt");
+}
+
+std::vector<double> linspace(double start, double end, std::size_t num) {
+  AssertThrow(start < end,
+              ExcMessage("Invalid range given. Check start and stop values."));
+  std::vector<double> result(num);
+  double step = (end - start) / (num - 1);
+
+  // Generate values using std::iota and a lambda for transformation
+  std::iota(result.begin(), result.end(), 0);
+  for (std::size_t i = 0; i < num; ++i) {
+    result[i] = start + step * i;
+  }
+
+  return result;
 }
 
 #endif
