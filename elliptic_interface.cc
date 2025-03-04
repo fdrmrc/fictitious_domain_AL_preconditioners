@@ -268,6 +268,8 @@ class EllipticInterfaceDLM {
 
   SparseMatrix<Number> stiffness_matrix_bg;
   SparseMatrix<Number> stiffness_matrix_fg;
+  SparseMatrix<Number>
+      stiffness_matrix_fg_plus_id;  // A_2 + gammaId, needed for modifiedAL
   SparseMatrix<Number> coupling_matrix;
 
   SparseMatrix<Number> mass_matrix_fg;
@@ -383,6 +385,9 @@ void EllipticInterfaceDLM<dim>::system_setup() {
 
   setup_stiffness_matrix(dof_handler_fg, constraints_fg, stiffness_sparsity_fg,
                          stiffness_matrix_fg);
+
+  setup_stiffness_matrix(dof_handler_fg, constraints_fg, stiffness_sparsity_fg,
+                         stiffness_matrix_fg_plus_id);
 
   mass_matrix_bg.reinit(stiffness_sparsity_bg);
   mass_matrix_fg.reinit(stiffness_sparsity_fg);
@@ -515,9 +520,6 @@ template <int dim>
 unsigned int EllipticInterfaceDLM<dim>::solve() {
   // Start with defining the outer iterations to an invalid value.
   unsigned int n_outer_iterations = numbers::invalid_unsigned_int;
-  // SparseDirectUMFPACK Af_inv_umfpack;
-  // Af_inv_umfpack.initialize(stiffness_matrix_bg);  // Ainv
-  // auto Af_inv = linear_operator(stiffness_matrix_bg, Af_inv_umfpack);
 
   auto A_omega1 = linear_operator(stiffness_matrix_bg);
   auto A_omega2 = linear_operator(stiffness_matrix_fg);
@@ -528,9 +530,6 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   auto Ct = linear_operator(coupling_matrix);
   auto C = transpose_operator(Ct);
 
-  SolverCG<BlockVector<double>> solver_lagrangian(
-      parameters.inner_solver_control);
-
   // We create empty operators for the action of the inverse of W. Depending on
   // the the choice, we either approximate it using the diagonal of the mass
   // matrix (squaring the entries) or we use the direct inversion of the mass
@@ -538,15 +537,15 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   auto invM = null_operator(M);
   auto invW = null_operator(M);
   SparseDirectUMFPACK M_inv_umfpack;
+
+  // Using inverse of diagonal mass matrix (squared)
+  Vector<double> inverse_diag_mass_squared(dof_handler_fg.n_dofs());
+  for (unsigned int i = 0; i < dof_handler_fg.n_dofs(); ++i)
+    inverse_diag_mass_squared[i] =
+        1. / (mass_matrix_fg.diag_element(i) * mass_matrix_fg.diag_element(i));
+
   DiagonalMatrix<Vector<double>> diag_inverse;
   if (parameters.use_diagonal_inverse == true) {
-    // Using inverse of diagonal mass matrix (squared)
-
-    Vector<double> inverse_diag_mass_squared(dof_handler_fg.n_dofs());
-    for (unsigned int i = 0; i < dof_handler_fg.n_dofs(); ++i)
-      inverse_diag_mass_squared[i] = 1. / (mass_matrix_fg.diag_element(i) *
-                                           mass_matrix_fg.diag_element(i));
-
     diag_inverse.reinit(inverse_diag_mass_squared);
     invW = linear_operator(diag_inverse);
   } else {
@@ -563,37 +562,50 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   auto A12_aug = -parameters.gamma_AL * Ct * invW * M;
   auto A21_aug = transpose_operator(A12_aug);
 
+  // Augmented (equivalent) system to be solved
   auto system_operator = block_operator<3, 3, BlockVector<double>>(
       {{{{A11_aug, A12_aug, Ct}},
         {{A21_aug, A22_aug, -1. * M}},
         {{C, -1. * M, NullCouplin}}}});  // augmented the 2x2 top left block!
 
+  // Initialize AMG preconditioners for inner solves
+  TrilinosWrappers::PreconditionAMG amg_prec_A11;
+  build_AMG_augmented_block_scalar(
+      dof_handler_bg, coupling_matrix, stiffness_matrix_bg,
+      inverse_diag_mass_squared, coupling_sparsity, constraints_bg,
+      parameters.gamma_AL, parameters.beta_1, amg_prec_A11);
+
+  // Initialize AMG prec for the A_2 augmented block
+  TrilinosWrappers::PreconditionAMG amg_prec_A22;
+  // immersed matrix (beta_2 - beta) (grad u,grad v) + gamma*Id
+  stiffness_matrix_fg_plus_id.copy_from(stiffness_matrix_fg);
+  // Add gamma*Id to A_2
+  for (unsigned int i = 0; i < stiffness_matrix_fg_plus_id.m(); ++i)
+    stiffness_matrix_fg_plus_id.add(i, i, parameters.gamma_AL);
+  amg_prec_A22.initialize(stiffness_matrix_fg_plus_id);
+  std::cout << "Initialized AMG for A_2" << std::endl;
+
   SolverFGMRES<BlockVector<Number>> solver_fgmres(
       parameters.outer_solver_control);
 
-  TrilinosWrappers::PreconditionAMG amg_prec_A11;
-  amg_prec_A11.initialize(stiffness_matrix_bg);
-  auto AMG_A1 = linear_operator(stiffness_matrix_bg, amg_prec_A11);
-  TrilinosWrappers::PreconditionAMG amg_prec_A22;
-  amg_prec_A22.initialize(stiffness_matrix_fg);
-  auto AMG_A2 = linear_operator(stiffness_matrix_fg, amg_prec_A22);
-
+  // Wrap the actual FGMRES solve in another scope in order to discard
+  // setup-cost.
   {
     TimerOutput::Scope t(computing_timer, "Solve system");
     if (parameters.use_modified_AL_preconditioner) {
       // If we use the modified AL preconditioner, we check if we use a small
       // value of gamma.
       AssertThrow(
-          parameters.gamma_AL <= 1.,
+          parameters.gamma_AL <= 3.,
           ExcMessage("gamma_AL is too large for modified AL preconditioner."));
 
       SolverCG<Vector<double>> solver_lagrangian_scalar(
           parameters.inner_solver_control);
       // Define block preconditioner using AL approach
       auto A11_aug_inv =
-          inverse_operator(A11_aug, solver_lagrangian_scalar, AMG_A1);
+          inverse_operator(A11_aug, solver_lagrangian_scalar, amg_prec_A11);
       auto A22_aug_inv =
-          inverse_operator(A22_aug, solver_lagrangian_scalar, AMG_A2);
+          inverse_operator(A22_aug, solver_lagrangian_scalar, amg_prec_A22);
 
       EllipticInterfacePreconditioners::BlockTriangularALPreconditionerModified
           preconditioner_AL(C, M, invW, parameters.gamma_AL, A11_aug_inv,
@@ -604,9 +616,11 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
       // Check that gamma is not too small
       AssertThrow(
           parameters.gamma_AL > 1.,
-          ExcMessage("Parameter gamma is probably small for classical AL "
+          ExcMessage("Parameter gamma is probably too small for classical AL "
                      "preconditioner."));
 
+      auto AMG_A1 = linear_operator(stiffness_matrix_bg, amg_prec_A11);
+      auto AMG_A2 = linear_operator(stiffness_matrix_fg, amg_prec_A22);
       // Define preconditioner for the augmented block
       auto prec_aug = block_operator<2, 2, BlockVector<double>>(
           {{{{AMG_A1, NullF}}, {{NullS, AMG_A2}}}});
@@ -614,6 +628,9 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
       auto Aug = block_operator<2, 2, BlockVector<double>>(
           {{{{A11_aug, A12_aug}},
             {{A21_aug, A22_aug}}}});  // augmented block to be inverted
+
+      SolverCG<BlockVector<double>> solver_lagrangian(
+          parameters.inner_solver_control);
       auto Aug_inv = inverse_operator(Aug, solver_lagrangian, prec_aug);
 
       EllipticInterfacePreconditioners::BlockTriangularALPreconditioner
@@ -624,8 +641,8 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   }
 
   system_rhs_block.block(2) = 0;  // last row of the rhs is 0
-
   n_outer_iterations = parameters.outer_solver_control.last_step();
+
   std::cout << "Solved in " << n_outer_iterations << " iterations"
             << (parameters.outer_solver_control.last_step() < 10 ? "  " : " ")
             << "\n";
@@ -712,6 +729,7 @@ void EllipticInterfaceDLM<dim>::run() {
     system_setup();
     setup_coupling();
     assemble();
+    // Loop over possible values of gamma and store outer iterations.
     for (const double gamma : gamma_values) {
       parameters.gamma_AL = gamma;
       std::cout << "gamma_AL= " << parameters.gamma_AL << std::endl;
