@@ -1,4 +1,6 @@
+#include <deal.II/base/convergence_table.h>
 #include <deal.II/base/exceptions.h>
+#include <deal.II/base/function.h>
 #include <deal.II/base/logstream.h>
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/parameter_acceptor.h>
@@ -11,6 +13,7 @@
 #include <deal.II/fe/fe.h>
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_system.h>
+#include <deal.II/fe/mapping_q1.h>
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/grid_out.h>
 #include <deal.II/grid/grid_tools.h>
@@ -32,6 +35,7 @@
 #include <deal.II/non_matching/coupling.h>
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
+#include <deal.II/numerics/vector_tools_common.h>
 
 #include <exception>
 #include <fstream>
@@ -45,7 +49,68 @@
 
 using namespace dealii;
 
-// Class
+// Analytical solution taken from https://arxiv.org/pdf/2211.03443
+template <int dim>
+class Solution : public Function<dim> {
+ public:
+  virtual double value(const Point<dim> &p,
+                       const unsigned int component = 0) const override;
+
+  virtual Tensor<1, dim> gradient(
+      const Point<dim> &p, const unsigned int component = 0) const override;
+};
+
+template <int dim>
+double Solution<dim>::value(const Point<dim> &p, const unsigned int) const {
+  double return_value;
+
+  auto r = p.norm();
+  const double coefficient_omega = 1.;
+  const double coefficient_omega2 = 10.;
+  if (r <= 1)  // inside domain omega2
+  {
+    return_value = (3. * coefficient_omega2 / coefficient_omega + 1. - r * r) /
+                   (2. * dim * coefficient_omega2);
+  } else {
+    return_value = (4. - r * r) / (2. * dim * coefficient_omega);
+  }
+
+  return return_value;
+}
+
+template <int dim>
+Tensor<1, dim> Solution<dim>::gradient(const Point<dim> &p,
+                                       const unsigned int) const {
+  const double coefficient_omega = 1.;
+  const double coefficient_omega2 = 10.;
+  auto r = p.norm();
+  Tensor<1, dim> gradient;
+  if (r <= 1) {
+    for (int i = 0; i < dim; ++i) {
+      gradient[i] = -p(i) / (dim * coefficient_omega2);
+    }
+  } else {
+    for (int i = 0; i < dim; ++i) {
+      gradient[i] = -p(i) / (dim * coefficient_omega);
+    }
+  }
+  return gradient;
+}
+
+// define boundary values to be the exact solution itself
+template <int dim>
+class BoundaryValues : public Function<dim> {
+ public:
+  virtual double value(const Point<dim> &p,
+                       const unsigned int component = 0) const override;
+};
+
+template <int dim>
+double BoundaryValues<dim>::value(const Point<dim> &p,
+                                  const unsigned int /*component*/) const {
+  return (4. - p[0] * p[0] - p[1] * p[1]) / 4.;
+}
+
 template <int dim>
 class ProblemParameters : public ParameterAcceptor {
  public:
@@ -97,6 +162,12 @@ class ProblemParameters : public ParameterAcceptor {
 
   bool use_sqrt_2_rule = false;
 
+  bool do_sanity_checks = true;
+
+  bool do_convergence_study = false;
+
+  bool export_matrices_for_eig_analysis = false;
+
   // AL parameter. Its magnitude depends on which AL preconditioner (original
   // vs. modified AL) is chosen. We define it as mutable since with modified AL
   // its value may change upon mesh refinement.
@@ -129,6 +200,12 @@ ProblemParameters<dim>::ProblemParameters()
   add_parameter("Beta_2", beta_2);
 
   add_parameter("Homogeneous Dirichlet boundary ids", dirichlet_ids);
+  add_parameter("Perform sanity checks", do_sanity_checks,
+                "Check condition number of C*Ct after solve().");
+  add_parameter("Perform convergence study", do_convergence_study,
+                "Using analytical solution for immersed circle (f = f_2 = 1)");
+  add_parameter("Export matrices for eigs-analysis",
+                export_matrices_for_eig_analysis);
 
   enter_subsection("Grid generation");
   {
@@ -251,7 +328,7 @@ class EllipticInterfaceDLM {
   Triangulation<dim> tria_bg;
   Triangulation<dim> tria_fg;
 
-  std::shared_ptr<Mapping<dim>> mapping;
+  MappingQ1<dim> mapping;
 
   DoFHandler<dim> dof_handler_bg;
   DoFHandler<dim> dof_handler_fg;
@@ -273,12 +350,13 @@ class EllipticInterfaceDLM {
   SparseMatrix<Number> coupling_matrix;
 
   SparseMatrix<Number> mass_matrix_fg;
-  SparseMatrix<Number> mass_matrix_bg;
 
   BlockVector<Number> system_rhs_block;
   BlockVector<Number> system_solution_block;
 
   mutable TimerOutput computing_timer;
+
+  mutable ConvergenceTable convergence_table;
 };
 
 template <int dim>
@@ -308,10 +386,10 @@ EllipticInterfaceDLM<dim>::EllipticInterfaceDLM(
         ExcMessage(
             "Parameter study for gamma makes sense only if you use modified "
             "AL preconditioner."));
-  AssertThrow(
-      parameters.use_sqrt_2_rule == parameters.use_modified_AL_preconditioner,
-      ExcMessage("The so-called sqrt(2)-rule makes sense only if you "
-                 "use the modified AL preconditioner."));
+  if (parameters.use_sqrt_2_rule)
+    AssertThrow(parameters.use_modified_AL_preconditioner,
+                ExcMessage("The so-called sqrt(2)-rule makes sense only if you "
+                           "use the modified AL preconditioner."));
 }
 
 // Generate the grids for the background and immersed domains
@@ -319,37 +397,47 @@ template <int dim>
 void EllipticInterfaceDLM<dim>::generate_grids() {
   TimerOutput::Scope t(computing_timer, "Grid generation");
 
-  try {
-    GridGenerator::generate_from_name_and_arguments(
-        tria_bg, parameters.name_of_background_grid,
-        parameters.arguments_for_background_grid);
+  // The convergence test is constructed ad-hoc...
+  if (parameters.do_convergence_study) {
+    GridGenerator::hyper_cube(tria_bg, -1.4, 1.4, false);
     tria_bg.refine_global(parameters.initial_background_refinement);
-  } catch (const std::exception &exc) {
-    std::cerr << exc.what() << std::endl;
-    std::cerr << "Error in background grid generation. Aborting." << std::endl;
-  }
-
-  try {
-    GridGenerator::generate_from_name_and_arguments(
-        tria_fg, parameters.name_of_immersed_grid,
-        parameters.arguments_for_immersed_grid);
+    GridGenerator::hyper_ball(tria_fg, {0., 0.}, 1., true);
     tria_fg.refine_global(parameters.initial_immersed_refinement);
-  } catch (const std::exception &exc) {
-    std::cerr << exc.what() << std::endl;
-    std::cerr << "Error in immersed grid generation. Aborting." << std::endl;
+
+  } else {
+    // ... otherwise, we let the user decide the grids from the parameters file.
+    try {
+      GridGenerator::generate_from_name_and_arguments(
+          tria_bg, parameters.name_of_background_grid,
+          parameters.arguments_for_background_grid);
+      tria_bg.refine_global(parameters.initial_background_refinement);
+    } catch (const std::exception &exc) {
+      std::cerr << exc.what() << std::endl;
+      std::cerr << "Error in background grid generation. Aborting."
+                << std::endl;
+    }
+
+    try {
+      GridGenerator::generate_from_name_and_arguments(
+          tria_fg, parameters.name_of_immersed_grid,
+          parameters.arguments_for_immersed_grid);
+      tria_fg.refine_global(parameters.initial_immersed_refinement);
+    } catch (const std::exception &exc) {
+      std::cerr << exc.what() << std::endl;
+      std::cerr << "Error in immersed grid generation. Aborting." << std::endl;
+    }
   }
 
   // Now check mesh sizes. We verify they are not too different by using safety
   // factors.
   const double h_background = GridTools::maximal_cell_diameter(tria_bg);
   const double h_immersed = GridTools::maximal_cell_diameter(tria_fg);
-  const double ratio = h_immersed / h_background;
+  const double ratio = h_background / h_immersed;
   std::cout << "h background = " << h_background << "\n"
             << "h immersed = " << h_immersed << "\n"
-            << "grids ratio = " << ratio << std::endl;
+            << "grids ratio (background/immersed) = " << ratio << std::endl;
 
-  const double safety_factor = 1.2;
-  AssertThrow(ratio < safety_factor && ratio > 0.7,
+  AssertThrow(ratio < 2.2 && ratio > 0.45,
               ExcMessage("Check mesh sizes of the two grids."));
 
   // Do not dump grids to disk if they are too large
@@ -372,10 +460,13 @@ void EllipticInterfaceDLM<dim>::system_setup() {
   constraints_bg.clear();
   constraints_fg.clear();
 
-  for (const types::boundary_id id : {0, 1, 2, 3}) {
+  if (parameters.do_convergence_study)
     VectorTools::interpolate_boundary_values(
-        dof_handler_bg, id, Functions::ZeroFunction<dim>(), constraints_bg);
-  }
+        dof_handler_bg, 0, BoundaryValues<dim>(), constraints_bg);
+  else
+    for (const types::boundary_id id : parameters.dirichlet_ids)
+      VectorTools::interpolate_boundary_values(
+          dof_handler_bg, id, Functions::ZeroFunction<dim>(), constraints_bg);
 
   constraints_bg.close();
   constraints_fg.close();
@@ -389,7 +480,6 @@ void EllipticInterfaceDLM<dim>::system_setup() {
   setup_stiffness_matrix(dof_handler_fg, constraints_fg, stiffness_sparsity_fg,
                          stiffness_matrix_fg_plus_id);
 
-  mass_matrix_bg.reinit(stiffness_sparsity_bg);
   mass_matrix_fg.reinit(stiffness_sparsity_fg);
 
   system_rhs_block.reinit(3);
@@ -402,7 +492,7 @@ void EllipticInterfaceDLM<dim>::system_setup() {
   std::cout << "N DoF background: " << dof_handler_bg.n_dofs() << std::endl;
   std::cout << "N DoF immersed: " << dof_handler_fg.n_dofs() << std::endl;
 
-  std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" << std::endl;
+  std::cout << "=============================================" << std::endl;
 }
 
 template <int dim>
@@ -427,13 +517,13 @@ void EllipticInterfaceDLM<dim>::setup_coupling() {
                                dof_handler_fg.n_dofs());
     NonMatching::create_coupling_sparsity_pattern(
         dof_handler_bg, dof_handler_fg, quad, dsp, constraints_bg,
-        ComponentMask(), ComponentMask());
+        ComponentMask(), ComponentMask(), mapping, mapping, constraints_fg);
     coupling_sparsity.copy_from(dsp);
     coupling_matrix.reinit(coupling_sparsity);
 
     NonMatching::create_coupling_mass_matrix(
         dof_handler_bg, dof_handler_fg, quad, coupling_matrix, constraints_bg,
-        ComponentMask(), ComponentMask());
+        ComponentMask(), ComponentMask(), mapping, mapping, constraints_fg);
   }
 }
 
@@ -493,19 +583,24 @@ void EllipticInterfaceDLM<dim>::assemble() {
                      system_rhs_block.block(0),
                      0.,                 // 0, no mass matrix
                      parameters.beta_1,  // only beta_1 (which is usually 1)
-                     1.);                // rhs value, f1
+                     1.);                // rhs value, f
 
   // immersed matrix A2 = (beta_2 - beta) (grad u,grad v)
-  assemble_subsystem(
-      fe_fg, dof_handler_fg, constraints_fg, stiffness_matrix_fg,
-      system_rhs_block.block(1),
-      0.,                                     // 0, no mass matrix
-      parameters.beta_2 - parameters.beta_1,  // only jump beta_2 - beta
-      3.);                                    // rhs value, f2
-
-  // mass matrix background
-  assemble_subsystem(fe_bg, dof_handler_bg, constraints_bg, mass_matrix_bg,
-                     system_rhs_block.block(0), 1., 0., 0.);
+  // The rhs changes if we want to do a convergence study.
+  if (parameters.do_convergence_study)
+    assemble_subsystem(
+        fe_fg, dof_handler_fg, constraints_fg, stiffness_matrix_fg,
+        system_rhs_block.block(1),
+        0.,                                     // 0, no mass matrix
+        parameters.beta_2 - parameters.beta_1,  // only jump beta_2 - beta
+        0.);  // rhs value for convergence study
+  else
+    assemble_subsystem(
+        fe_fg, dof_handler_fg, constraints_fg, stiffness_matrix_fg,
+        system_rhs_block.block(1),
+        0.,                                     // 0, no mass matrix
+        parameters.beta_2 - parameters.beta_1,  // only jump beta_2 - beta
+        1.);                                    // rhs value, f2-f
 
   //  mass matrix immersed
   assemble_subsystem(fe_fg, dof_handler_fg, constraints_fg, mass_matrix_fg,
@@ -530,10 +625,10 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   auto Ct = linear_operator(coupling_matrix);
   auto C = transpose_operator(Ct);
 
-  // We create empty operators for the action of the inverse of W. Depending on
-  // the the choice, we either approximate it using the diagonal of the mass
-  // matrix (squaring the entries) or we use the direct inversion of the mass
-  // matrix provided by UMFPACK.
+  // We create empty operators for the action of the inverse of W. Depending
+  // on the the choice, we either approximate it using the diagonal of the
+  // mass matrix (squaring the entries) or we use the direct inversion of the
+  // mass matrix provided by UMFPACK.
   auto invM = null_operator(M);
   auto invW = null_operator(M);
   SparseDirectUMFPACK M_inv_umfpack;
@@ -560,7 +655,8 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   auto A11_aug = A_omega1 + parameters.gamma_AL * Ct * invW * C;
   auto A22_aug = A_omega2 + parameters.gamma_AL * M * invW * M;
   auto A12_aug = -parameters.gamma_AL * Ct * invW * M;
-  auto A21_aug = transpose_operator(A12_aug);
+  // Next one is just transpose_operator(A12_aug);
+  auto A21_aug = -parameters.gamma_AL * M * invW * C;
 
   // Augmented (equivalent) system to be solved
   auto system_operator = block_operator<3, 3, BlockVector<double>>(
@@ -585,6 +681,15 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   amg_prec_A22.initialize(stiffness_matrix_fg_plus_id);
   std::cout << "Initialized AMG for A_2" << std::endl;
 
+  if (parameters.export_matrices_for_eig_analysis) {
+    std::cout << "Exporting matrices to .csv for eigenvalues analysis...";
+    export_to_matlab_csv(stiffness_matrix_bg, "A_DLFDM.csv");
+    export_to_matlab_csv(stiffness_matrix_fg, "A_2_DLFDM.csv");
+    export_to_matlab_csv(coupling_matrix, "Ct_DLFDM.csv");
+    export_to_matlab_csv(mass_matrix_fg, "M_DLFDM.csv");
+    std::cout << "Done." << std::endl;
+  }
+
   SolverFGMRES<BlockVector<Number>> solver_fgmres(
       parameters.outer_solver_control);
 
@@ -596,7 +701,7 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
       // If we use the modified AL preconditioner, we check if we use a small
       // value of gamma.
       AssertThrow(
-          parameters.gamma_AL <= 3.,
+          parameters.gamma_AL <= 5.,
           ExcMessage("gamma_AL is too large for modified AL preconditioner."));
 
       SolverCG<Vector<double>> solver_lagrangian_scalar(
@@ -610,6 +715,8 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
       EllipticInterfacePreconditioners::BlockTriangularALPreconditionerModified
           preconditioner_AL(C, M, invW, parameters.gamma_AL, A11_aug_inv,
                             A22_aug_inv);
+
+      system_rhs_block.block(2) = 0;  // last row of the rhs is 0
       solver_fgmres.solve(system_operator, system_solution_block,
                           system_rhs_block, preconditioner_AL);
     } else {
@@ -635,13 +742,22 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
 
       EllipticInterfacePreconditioners::BlockTriangularALPreconditioner
           preconditioner_AL(Aug_inv, C, M, invW, parameters.gamma_AL);
+      system_rhs_block.block(2) = 0;  // last row of the rhs is 0
       solver_fgmres.solve(system_operator, system_solution_block,
                           system_rhs_block, preconditioner_AL);
     }
+    // Finally, distribute the constraints
+    constraints_bg.distribute(system_solution_block.block(0));
+    constraints_fg.distribute(system_solution_block.block(1));
+    constraints_fg.distribute(system_solution_block.block(2));
   }
 
-  system_rhs_block.block(2) = 0;  // last row of the rhs is 0
   n_outer_iterations = parameters.outer_solver_control.last_step();
+
+  // We update the table with iteration counts
+  convergence_table.add_value("cells", tria_bg.n_active_cells());
+  convergence_table.add_value("dofs", dof_handler_bg.n_dofs());
+  convergence_table.add_value("Outer iterations", n_outer_iterations);
 
   std::cout << "Solved in " << n_outer_iterations << " iterations"
             << (parameters.outer_solver_control.last_step() < 10 ? "  " : " ")
@@ -649,40 +765,43 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
 
   // Do some sanity checks: Check the constraints residual and the condition
   // number of CCt.
-  Vector<Number> difference_constraints = system_solution_block.block(2);
+  if (parameters.do_sanity_checks) {
+    Vector<Number> difference_constraints = system_solution_block.block(2);
 
-  coupling_matrix.Tvmult(difference_constraints,
-                         system_solution_block.block(0));
-  difference_constraints *= -1;
+    coupling_matrix.Tvmult(difference_constraints,
+                           system_solution_block.block(0));
+    difference_constraints *= -1;
 
-  mass_matrix_fg.vmult_add(difference_constraints,
-                           system_solution_block.block(1));
+    mass_matrix_fg.vmult_add(difference_constraints,
+                             system_solution_block.block(1));
 
-  std::cout << "L infty norm of constraints residual "
-            << difference_constraints.linfty_norm() << "\n";
+    std::cout << "L infty norm of constraints residual "
+              << difference_constraints.linfty_norm() << "\n";
 
-  // Estimate condition number
-  std::cout << "Estimate condition number of CCt using CG" << std::endl;
-  Vector<double> v_eig(system_solution_block.block(1));
-  SolverControl solver_control_eig(v_eig.size(), 1e-12, false);
-  SolverCG<Vector<double>> solver_eigs(solver_control_eig);
+    // Estimate condition number
+    std::cout << "Estimate condition number of CCt using CG" << std::endl;
+    Vector<double> v_eig(system_solution_block.block(1));
+    SolverControl solver_control_eig(v_eig.size(), 1e-12, false);
+    SolverCG<Vector<double>> solver_eigs(solver_control_eig);
 
-  solver_eigs.connect_condition_number_slot(
-      std::bind(output_double_number, std::placeholders::_1,
-                "Condition number estimate: "));
-  auto BBt = C * Ct;
+    solver_eigs.connect_condition_number_slot(
+        std::bind(output_double_number, std::placeholders::_1,
+                  "Condition number estimate: "));
+    auto BBt = C * Ct;
 
-  Vector<double> u(v_eig);
-  u = 0.;
-  Vector<double> f(v_eig);
-  f = 1.;
-  PreconditionIdentity prec_no;
-  try {
-    solver_eigs.solve(BBt, u, f, prec_no);
-  } catch (...) {
-    std::cerr << "***BBt solve not successfull (see condition number above)***"
-              << std::endl;
-    AssertThrow(false, ExcMessage("BBt does not have full rank."));
+    Vector<double> u(v_eig);
+    u = 0.;
+    Vector<double> f(v_eig);
+    f = 1.;
+    PreconditionIdentity prec_no;
+    try {
+      solver_eigs.solve(BBt, u, f, prec_no);
+    } catch (...) {
+      std::cerr
+          << "***BBt solve not successfull (see condition number above)***"
+          << std::endl;
+      AssertThrow(false, ExcMessage("BBt does not have full rank."));
+    }
   }
 
   return n_outer_iterations;
@@ -693,11 +812,47 @@ void EllipticInterfaceDLM<dim>::output_results(
     const unsigned int ref_cycle) const {
   TimerOutput::Scope t(computing_timer, "Output results");
 
+  if (parameters.do_convergence_study) {
+    Vector<float> norm_per_cell(tria_bg.n_active_cells());
+    VectorTools::integrate_difference(
+        mapping, dof_handler_bg, system_solution_block.block(0),
+        Solution<dim>(), norm_per_cell, QGauss<dim>(fe_bg.degree + 2),
+        VectorTools::L2_norm);
+
+    const double L2_error = VectorTools::compute_global_error(
+        tria_bg, norm_per_cell, VectorTools::L2_norm);
+
+    Vector<float> norm_per_cell_H1(tria_bg.n_active_cells());
+    VectorTools::integrate_difference(
+        mapping, dof_handler_bg, system_solution_block.block(0),
+        Solution<dim>(), norm_per_cell_H1, QGauss<dim>(fe_bg.degree + 2),
+        VectorTools::H1_norm);
+    const double H1_error = VectorTools::compute_global_error(
+        tria_bg, norm_per_cell_H1, VectorTools::H1_norm);
+
+    // We add more columns if we want to show errors
+    convergence_table.add_value("L2", L2_error);
+    convergence_table.add_value("H1", H1_error);
+
+    convergence_table.set_precision("L2", 3);
+    convergence_table.set_precision("H1", 3);
+
+    convergence_table.set_scientific("L2", true);
+    convergence_table.set_scientific("H1", true);
+
+    convergence_table.evaluate_convergence_rates(
+        "L2", ConvergenceTable::reduction_rate_log2);
+    convergence_table.evaluate_convergence_rates(
+        "H1", ConvergenceTable::reduction_rate_log2);
+  }
+  convergence_table.write_text(std::cout,
+                               TableHandler::TextOutputFormat::org_mode_table);
+
   // Do not dump grids to disk if they are too large
   if (tria_bg.n_active_cells() < 1e5) {
     DataOut<dim> data_out_fg;
     data_out_fg.attach_dof_handler(dof_handler_fg);
-    data_out_fg.add_data_vector(system_solution_block.block(1), "u");
+    data_out_fg.add_data_vector(system_solution_block.block(1), "u2");
     data_out_fg.add_data_vector(system_solution_block.block(2), "lambda");
     data_out_fg.build_patches();
     std::ofstream output_fg("solution-immersed-" + std::to_string(ref_cycle) +
@@ -716,9 +871,10 @@ void EllipticInterfaceDLM<dim>::output_results(
 
 template <int dim>
 void EllipticInterfaceDLM<dim>::run() {
-  // If we want to select the gamma value experimentally, we first run a coarse
-  // problem for different sampled values of gamma. This makes sense only for
-  // the modified AL preconditioner, so we check beforehand if it is used.
+  // If we want to select the gamma value experimentally, we first run a
+  // coarse problem for different sampled values of gamma. This makes sense
+  // only for the modified AL preconditioner, so we check beforehand if it is
+  // used.
 
   if (parameters.do_parameter_study &&
       parameters.use_modified_AL_preconditioner) {
@@ -743,7 +899,7 @@ void EllipticInterfaceDLM<dim>::run() {
         outer_iterations.begin();
 
     parameters.gamma_AL = gamma_values[min_index];
-    std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" << std::endl;
+    std::cout << "=============================================" << std::endl;
     std::cout << "OPTIMAL VALUE FOR GAMMA FOUND EXPERIMENTALLY: "
               << parameters.gamma_AL << std::endl;
     std::cout << "START CONVERGENCE STUDY WITH GAMMA: " << parameters.gamma_AL
@@ -760,7 +916,7 @@ void EllipticInterfaceDLM<dim>::run() {
 
   for (unsigned int ref_cycle = 0; ref_cycle < parameters.n_refinement_cycles;
        ++ref_cycle) {
-    std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" << std::endl;
+    std::cout << "=============================================" << std::endl;
     std::cout << "Refinement cycle: " << ref_cycle << std::endl;
     std::cout << "gamma_AL= " << parameters.gamma_AL << std::endl;
     // Create the grids only during the first refinement cycle
@@ -777,8 +933,8 @@ void EllipticInterfaceDLM<dim>::run() {
     assemble();
     solve();
     if (parameters.use_modified_AL_preconditioner && parameters.use_sqrt_2_rule)
-      parameters.gamma_AL /= std::sqrt(2.);  // using sqrt(2)-rule from
-                                             // modified-AL paper.
+      parameters.gamma_AL /=
+          std::sqrt(2.);  // using sqrt(2)-rule from modified - AL paper
     output_results(ref_cycle);
   }
 }
