@@ -4,16 +4,21 @@ subsection Elliptic Interface Problem
 set Beta_1                             = 1
 set Beta_2                             = 10
 set Coupling quadrature order          = 3
+set Export matrices for eigs-analysis  = false
 set FE degree background               = 1
 set FE degree immersed                 = 1
 set Homogeneous Dirichlet boundary ids = 0, 1, 2, 3
 set Output directory                   = .
+ # Using analytical solution for immersed circle (f = f_2 = 1)
+set Perform convergence study          = false
+ # Check condition number of C*Ct after solve().
+set Perform sanity checks              = true
 
 
   subsection AL preconditioner
    # Perform a parameter study on the AL parameter gamma on a coarse mesh to
    # select experimentally an optimal value.
-set Do parameter study             = true
+set Do parameter study             = false
 
    # Use diagonal approximation for the inverse (squared) of the immersed
    # mass matrix.
@@ -21,11 +26,11 @@ set Use diagonal inverse           = false
 
    # Use the modified AL preconditioner. If false, the classical AL
    # preconditioner is used.
-set Use modified AL preconditioner = true
+set Use modified AL preconditioner = false
 
    # Use sqrt(2)-rule for gamma. It makes sense only for modified AL
    # variant.
-set Use sqrt(2)-rule for gamma     = true
+set Use sqrt(2)-rule for gamma     = false
 set Verbosity level                = 10
 set gamma                          = 10
   end
@@ -41,18 +46,18 @@ set Immersed grid generator arguments   = -0.14: 0.44: true
 set Log frequency = 1
 set Log history   = false
 set Log result    = true
-set Max steps     = 1000
-set Reduction     = 1.e-20
-set Tolerance     = 1.e-4 
+set Max steps     = 1000   # default: 100
+set Reduction     = 1.e-20 # default: 1.e-2
+set Tolerance     = 1.e-4  # default: 1.e-10
   end
 
   subsection Outer solver control
 set Log frequency = 1
 set Log history   = true   # default: false
 set Log result    = true
-set Max steps     = 1000
-set Reduction     = 1.e-20
-set Tolerance     = 1.e-6 
+set Max steps     = 1000   # default: 100
+set Reduction     = 1.e-20 # default: 1.e-2
+set Tolerance     = 1.e-6  # default: 1.e-10
   end
 
   subsection Parameter study
@@ -75,7 +80,7 @@ set Initial background refinement = 4
 set Initial immersed refinement   = 2
 
    # Number of refinement cycles to perform convergence studies.
-set Refinemented cycles           = 7
+set Refinemented cycles           = 5
   end
 
   subsection Right hand side
