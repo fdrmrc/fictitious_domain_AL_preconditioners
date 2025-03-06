@@ -137,6 +137,14 @@ class ProblemParameters : public ParameterAcceptor {
   // beta_2, instead, is the one which is changed.
   double beta_2 = 10.;
 
+  // Constants for the rhs: (f,f_2,0)
+
+  // First entry of the rhs, for u_1
+  double f = 1.;
+
+  // Second entry for the rhs, for u_2
+  double f_2 = 2.;
+
   std::list<types::boundary_id> dirichlet_ids{0, 1, 2, 3};
 
   unsigned int background_space_finite_element_degree = 1;
@@ -173,9 +181,6 @@ class ProblemParameters : public ParameterAcceptor {
   // its value may change upon mesh refinement.
   mutable double gamma_AL = 10.;
 
-  mutable ParameterAcceptorProxy<Functions::ParsedFunction<dim>>
-      rhs;  //(f,f_2,0)
-
   mutable ParameterAcceptorProxy<ReductionControl> outer_solver_control;
   mutable ParameterAcceptorProxy<ReductionControl> inner_solver_control;
 };
@@ -183,7 +188,6 @@ class ProblemParameters : public ParameterAcceptor {
 template <int dim>
 ProblemParameters<dim>::ProblemParameters()
     : ParameterAcceptor("Elliptic Interface Problem/"),
-      rhs("Right hand side", dim + 1),
       outer_solver_control("Outer solver control"),
       inner_solver_control("Inner solver control") {
   add_parameter("FE degree background", background_space_finite_element_degree,
@@ -198,6 +202,8 @@ ProblemParameters<dim>::ProblemParameters()
 
   add_parameter("Beta_1", beta_1);
   add_parameter("Beta_2", beta_2);
+  add_parameter("f", f, "Rhs for u_1.");
+  add_parameter("f_2", f_2, "Rhs for u_2.");
 
   add_parameter("Homogeneous Dirichlet boundary ids", dirichlet_ids);
   add_parameter("Perform sanity checks", do_sanity_checks,
@@ -265,10 +271,6 @@ ProblemParameters<dim>::ProblemParameters()
                   "Python or MatLab).");
   }
   leave_subsection();
-
-  rhs.declare_parameters_call_back.connect([&]() {
-    Functions::ParsedFunction<dim>::declare_parameters(this->prm, dim + 1);
-  });
 
   outer_solver_control.declare_parameters_call_back.connect([]() -> void {
     ParameterAcceptor::prm.set("Max steps", "1000");
@@ -583,7 +585,7 @@ void EllipticInterfaceDLM<dim>::assemble() {
                      system_rhs_block.block(0),
                      0.,                 // 0, no mass matrix
                      parameters.beta_1,  // only beta_1 (which is usually 1)
-                     1.);                // rhs value, f
+                     parameters.f);      // rhs value, f
 
   // immersed matrix A2 = (beta_2 - beta) (grad u,grad v)
   // The rhs changes if we want to do a convergence study.
@@ -594,13 +596,13 @@ void EllipticInterfaceDLM<dim>::assemble() {
         0.,                                     // 0, no mass matrix
         parameters.beta_2 - parameters.beta_1,  // only jump beta_2 - beta
         0.);  // rhs value for convergence study
-  else
+  else        // read rhs values (constants) from parameters file
     assemble_subsystem(
         fe_fg, dof_handler_fg, constraints_fg, stiffness_matrix_fg,
         system_rhs_block.block(1),
         0.,                                     // 0, no mass matrix
         parameters.beta_2 - parameters.beta_1,  // only jump beta_2 - beta
-        1.);                                    // rhs value, f2-f
+        parameters.f_2 - parameters.f);         // rhs value, f2-f
 
   //  mass matrix immersed
   assemble_subsystem(fe_fg, dof_handler_fg, constraints_fg, mass_matrix_fg,
