@@ -162,34 +162,39 @@ class BlockTriangularALPreconditionerModified {
     const auto &u2 = src.block(1);
     const auto &lambda = src.block(2);
 
-    // Create temporary vectors for intermediate results
-    typename BlockVectorType::BlockType temp(lambda.size());
+    // // // Create temporary vectors for intermediate results
+    // typename BlockVectorType::BlockType temp(lambda.size());
 
-    // 1. Compute the third block first (1st inverse application: invW)
-    dst.block(2) = invW * lambda;
-    dst.block(2) *= -gamma;
+    // // 1. Compute the third block first (1st inverse application: invW)
+    // dst.block(2) = invW * lambda;
+    // dst.block(2) *= -gamma;
 
-    // Prepare for the second block calculation
-    temp = M * (-1.0 / gamma * dst.block(2));  // M * invW * lambda
+    // // Prepare for the second block calculation
+    // temp = M * (-1.0 / gamma * dst.block(2));  // M * invW * lambda
 
-    // 2. Compute the second block (2nd inverse application: A22_inv)
-    // A22_inv * (u2 - gamma * M * invW * lambda)
-    temp *= -gamma;
-    temp += u2;
-    dst.block(1) = A22_inv * temp;
+    // // 2. Compute the second block (2nd inverse application: A22_inv)
+    // // A22_inv * (u2 - gamma * M * invW * lambda)
+    // temp *= -gamma;
+    // temp += u2;
+    // dst.block(1) = A22_inv * temp;
 
-    // Prepare for the first block calculation
-    auto B_T = -gamma * Ct * invW * M;
-    temp = B_T * dst.block(1);  // B_T * A22_inv * (...)
-    temp *= -1.0;
-    temp += u;
+    // // Prepare for the first block calculation
+    // auto B_T = -gamma * Ct * invW * M;
+    // temp = B_T * dst.block(1);  // B_T * A22_inv * (...)
+    // temp *= -1.0;
+    // temp += u;
 
-    // Add the term with Ct
-    auto C_T_term = Ct * (-1.0 / gamma * dst.block(2));  // Ct * invW * lambda
-    temp += gamma * C_T_term;
+    // // Add the term with Ct
+    // auto C_T_term = Ct * (-1.0 / gamma * dst.block(2));  // Ct * invW *
+    // lambda temp += gamma * C_T_term;
 
-    // 3. Compute the first block (3rd inverse application: A11_inv)
-    dst.block(0) = A11_inv * temp;
+    // // 3. Compute the first block (3rd inverse application: A11_inv)
+    // dst.block(0) = A11_inv * temp;
+
+    dst.block(2) = -gamma * invW * lambda;
+    dst.block(1) = A22_inv * (u2 + M * dst.block(2));
+    dst.block(0) = A11_inv * (u + gamma * Ct * invW * M * dst.block(1) -
+                              Ct * dst.block(2));
   }
 
   LinearOperator<Vector<double>> A11_inv;

@@ -845,8 +845,10 @@ void EllipticInterfaceDLM<dim>::output_results(
     convergence_table.evaluate_convergence_rates(
         "H1", ConvergenceTable::reduction_rate_log2);
   }
+  std::cout << "=============================================" << std::endl;
   convergence_table.write_text(std::cout,
                                TableHandler::TextOutputFormat::org_mode_table);
+  std::cout << "=============================================" << std::endl;
 
   // Do not dump grids to disk if they are too large
   if (tria_bg.n_active_cells() < 1e5) {
@@ -913,6 +915,7 @@ void EllipticInterfaceDLM<dim>::run() {
   system_solution_block = 0;
   tria_bg.clear();
   tria_fg.clear();
+  convergence_table.clear();
 
   for (unsigned int ref_cycle = 0; ref_cycle < parameters.n_refinement_cycles;
        ++ref_cycle) {
