@@ -56,7 +56,7 @@ double compute_l2_norm_matrix(const SparseMatrix<double>& C,
 template <typename MatrixType>
 void export_to_matlab_csv(const MatrixType& matrix,
                           const std::string& filename) {
-  if (matrix.m() > 1e3 || matrix.n() > 1e3) {
+  if (matrix.m() > 1e4 || matrix.n() > 1e4) {
     return;
   }
   std::ofstream out(filename);
