@@ -703,7 +703,7 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
       // If we use the modified AL preconditioner, we check if we use a small
       // value of gamma.
       AssertThrow(
-          parameters.gamma_AL <= 5.,
+          parameters.gamma_AL <= 20.,
           ExcMessage("gamma_AL is too large for modified AL preconditioner."));
 
       SolverCG<Vector<double>> solver_lagrangian_scalar(
@@ -758,7 +758,9 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
 
   // We update the table with iteration counts
   convergence_table.add_value("cells", tria_bg.n_active_cells());
-  convergence_table.add_value("dofs", dof_handler_bg.n_dofs());
+  convergence_table.add_value("DoF background", dof_handler_bg.n_dofs());
+  convergence_table.add_value("DoF immersed", dof_handler_fg.n_dofs());
+  convergence_table.add_value("gamma (AL)", parameters.gamma_AL);
   convergence_table.add_value("Outer iterations", n_outer_iterations);
 
   std::cout << "Solved in " << n_outer_iterations << " iterations"
