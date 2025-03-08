@@ -35,6 +35,7 @@ set Use modified AL preconditioner = false
 set Use sqrt(2)-rule for gamma     = false
 set Verbosity level                = 10
 set gamma                          = 10
+set gamma2                         = 1e-2
   end
 
   subsection Grid generation
