@@ -35,7 +35,7 @@ set Use modified AL preconditioner = false
 set Use sqrt(2)-rule for gamma     = false
 set Verbosity level                = 10
 set gamma                          = 10
-set gamma2                         = 1e-2
+set gamma2                         = 10
   end
 
   subsection Grid generation
@@ -59,8 +59,8 @@ set Log frequency = 1
 set Log history   = true   # default: false
 set Log result    = true
 set Max steps     = 1000   # default: 100
-set Reduction     = 1.e-20 # default: 1.e-2
-set Tolerance     = 1.e-6  # default: 1.e-10
+set Reduction     = 1.e-6 # default: 1.e-2
+set Tolerance     = 1.e-20  # default: 1.e-10
   end
 
   subsection Parameter study
