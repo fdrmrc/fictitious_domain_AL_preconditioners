@@ -180,8 +180,8 @@ class ProblemParameters : public ParameterAcceptor {
   // AL parameter. Its magnitude depends on which AL preconditioner (original
   // vs. modified AL) is chosen. We define it as mutable since with modified AL
   // its value may change upon mesh refinement.
-  mutable double gamma_AL = 10.;
-  mutable double gamma_AL2 = 10.;
+  mutable double gamma_AL_background = 10.;
+  mutable double gamma_AL_immersed = 10.;
 
   mutable ParameterAcceptorProxy<ReductionControl> outer_solver_control;
   mutable ParameterAcceptorProxy<ReductionControl> inner_solver_control;
@@ -255,8 +255,8 @@ ProblemParameters<dim>::ProblemParameters()
     add_parameter("Use sqrt(2)-rule for gamma", use_sqrt_2_rule,
                   "Use sqrt(2)-rule for gamma. It makes sense only for "
                   "modified AL variant.");
-    add_parameter("gamma", gamma_AL);
-    add_parameter("gamma2", gamma_AL2);
+    add_parameter("gamma fluid", gamma_AL_background);
+    add_parameter("gamma solid", gamma_AL_immersed);
     add_parameter("Verbosity level", verbosity_level);
   }
   leave_subsection();
@@ -381,9 +381,16 @@ EllipticInterfaceDLM<dim>::EllipticInterfaceDLM(
   AssertThrow(parameters.beta_1 > 0., ExcMessage("Beta_2 must be positive."));
   AssertThrow(parameters.beta_2 > parameters.beta_1,
               ExcMessage("Beta_2 must be greater than Beta_1."));
-  AssertThrow(parameters.gamma_AL > 0., ExcMessage("Gamma must be positive."));
-  AssertThrow(parameters.gamma_AL2 > 0.,
+  AssertThrow(parameters.gamma_AL_background > 0.,
+              ExcMessage("Gamma must be positive."));
+  AssertThrow(parameters.gamma_AL_immersed > 0.,
               ExcMessage("Gamma2 must be positive."));
+
+  // Check that the AL parameters for the solid equation is smaller than the
+  // fluid one
+  AssertThrow(parameters.gamma_AL_immersed <= parameters.gamma_AL_background,
+              ExcMessage("The AL parameter gamma2 for the solid should be "
+                         "smaller than gamma for the fluid region. Aborting."));
 
   // Check that some settings are used only when modified AL preconditioner is
   // selected.
@@ -660,12 +667,12 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   }
 
   // Define augmented blocks. Notice that A22_aug is actually A_omega2 +
-  // gamma_AL * Id
-  auto A11_aug = A_omega1 + parameters.gamma_AL * Ct * invW * C;
-  auto A22_aug = A_omega2 + parameters.gamma_AL2 * M * invW * M;
-  auto A12_aug = -parameters.gamma_AL * Ct * invW * M;
+  // gamma_AL_background * Id
+  auto A11_aug = A_omega1 + parameters.gamma_AL_background * Ct * invW * C;
+  auto A22_aug = A_omega2 + parameters.gamma_AL_immersed * M * invW * M;
+  auto A12_aug = -parameters.gamma_AL_background * Ct * invW * M;
   // Next one is just transpose_operator(A12_aug);
-  auto A21_aug = -parameters.gamma_AL2 * M * invW * C;
+  auto A21_aug = -parameters.gamma_AL_immersed * M * invW * C;
 
   // Augmented (equivalent) system to be solved
   auto system_operator = block_operator<3, 3, BlockVector<double>>(
@@ -678,7 +685,7 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   build_AMG_augmented_block_scalar(
       dof_handler_bg, coupling_matrix, stiffness_matrix_bg,
       inverse_diag_mass_squared, coupling_sparsity, constraints_bg,
-      parameters.gamma_AL, parameters.beta_1, amg_prec_A11);
+      parameters.gamma_AL_background, parameters.beta_1, amg_prec_A11);
 
   // Initialize AMG prec for the A_2 augmented block
   TrilinosWrappers::PreconditionAMG amg_prec_A22;
@@ -686,7 +693,7 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   stiffness_matrix_fg_plus_id.copy_from(stiffness_matrix_fg);
   // Add gamma*Id to A_2
   for (unsigned int i = 0; i < stiffness_matrix_fg_plus_id.m(); ++i)
-    stiffness_matrix_fg_plus_id.add(i, i, parameters.gamma_AL2);
+    stiffness_matrix_fg_plus_id.add(i, i, parameters.gamma_AL_immersed);
   amg_prec_A22.initialize(stiffness_matrix_fg_plus_id);
   std::cout << "Initialized AMG for A_2" << std::endl;
 
@@ -712,8 +719,9 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
       // If we use the modified AL preconditioner, we check if we use a small
       // value of gamma.
       AssertThrow(
-          parameters.gamma_AL2 <= 20.,
-          ExcMessage("gamma_AL2 is too large for modified ALpreconditioner."));
+          parameters.gamma_AL_immersed <= 20.,
+          ExcMessage(
+              "gamma_AL_immersed is too large for modified ALpreconditioner."));
 
       SolverCG<Vector<double>> solver_lagrangian_scalar(
           parameters.inner_solver_control);
@@ -724,8 +732,8 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
           inverse_operator(A22_aug, solver_lagrangian_scalar, amg_prec_A22);
 
       EllipticInterfacePreconditioners::BlockTriangularALPreconditionerModified
-          preconditioner_AL(C, M, invW, parameters.gamma_AL, A11_aug_inv,
-                            A22_aug_inv);
+          preconditioner_AL(C, M, invW, parameters.gamma_AL_background,
+                            A11_aug_inv, A22_aug_inv);
 
       system_rhs_block.block(2) = 0;  // last row of the rhs is 0
 
@@ -735,10 +743,10 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
       // Check that gamma is not too small. We force also gamma2 to be equal to
       // gamma.
       AssertThrow(
-          parameters.gamma_AL > 1.,
+          parameters.gamma_AL_background > 1.,
           ExcMessage("Parameter gamma is probably too small for classical AL "
                      "preconditioner."));
-      parameters.gamma_AL2 = parameters.gamma_AL;
+      parameters.gamma_AL_immersed = parameters.gamma_AL_background;
 
       std::cout << "\t ************************************** WARNING "
                    "************************************** \n"
@@ -763,7 +771,8 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
       auto Aug_inv = inverse_operator(Aug, solver_lagrangian, prec_aug);
 
       EllipticInterfacePreconditioners::BlockTriangularALPreconditioner
-          preconditioner_AL(Aug_inv, C, M, invW, parameters.gamma_AL);
+          preconditioner_AL(Aug_inv, C, M, invW,
+                            parameters.gamma_AL_background);
       system_rhs_block.block(2) = 0;  // last row of the rhs is 0
       solver_fgmres.solve(system_operator, system_solution_block,
                           system_rhs_block, preconditioner_AL);
@@ -780,9 +789,9 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   convergence_table.add_value("cells", tria_bg.n_active_cells());
   convergence_table.add_value("DoF background", dof_handler_bg.n_dofs());
   convergence_table.add_value("DoF immersed", dof_handler_fg.n_dofs());
-  convergence_table.add_value("gamma (AL)", parameters.gamma_AL);
+  convergence_table.add_value("gamma (AL)", parameters.gamma_AL_background);
   if (parameters.use_modified_AL_preconditioner)
-    convergence_table.add_value("gamma2 (AL)", parameters.gamma_AL2);
+    convergence_table.add_value("gamma2 (AL)", parameters.gamma_AL_immersed);
   convergence_table.add_value("Outer iterations", n_outer_iterations);
 
   std::cout << "Solved in " << n_outer_iterations << " iterations"
@@ -919,8 +928,10 @@ void EllipticInterfaceDLM<dim>::run() {
     assemble();
     // Loop over possible values of gamma and store outer iterations.
     for (const double gamma : gamma_values) {
-      parameters.gamma_AL = gamma;
-      std::cout << "gamma_AL= " << parameters.gamma_AL << std::endl;
+      parameters.gamma_AL_background = gamma;
+      parameters.gamma_AL_immersed = gamma;
+      std::cout << "gamma_AL_background= " << parameters.gamma_AL_background
+                << std::endl;
       unsigned int iters = solve();
       outer_iterations.push_back(iters);
       system_solution_block = 0;  // reset solution
@@ -930,14 +941,15 @@ void EllipticInterfaceDLM<dim>::run() {
         std::min_element(outer_iterations.begin(), outer_iterations.end()) -
         outer_iterations.begin();
 
-    parameters.gamma_AL = gamma_values[min_index];
+    parameters.gamma_AL_background = gamma_values[min_index];
+    parameters.gamma_AL_immersed = parameters.gamma_AL_background;
     std::cout << "============================================================="
                  "==========================="
               << std::endl;
     std::cout << "OPTIMAL VALUE FOR GAMMA FOUND EXPERIMENTALLY: "
-              << parameters.gamma_AL << std::endl;
-    std::cout << "START CONVERGENCE STUDY WITH GAMMA: " << parameters.gamma_AL
-              << std::endl;
+              << parameters.gamma_AL_background << std::endl;
+    std::cout << "START CONVERGENCE STUDY WITH GAMMA: "
+              << parameters.gamma_AL_background << std::endl;
 
     // If we have determined the optimal gamma value, we can proceed with the
     // refinement cycles using such a value of gamma.
@@ -955,7 +967,10 @@ void EllipticInterfaceDLM<dim>::run() {
                  "==========================="
               << std::endl;
     std::cout << "Refinement cycle: " << ref_cycle << std::endl;
-    std::cout << "gamma_AL= " << parameters.gamma_AL << std::endl;
+    std::cout << "gamma_AL_background= " << parameters.gamma_AL_background
+              << std::endl;
+    std::cout << "gamma_AL_immersed= " << parameters.gamma_AL_immersed
+              << std::endl;
     // Create the grids only during the first refinement cycle
     if (ref_cycle == 0) {
       generate_grids();
@@ -969,9 +984,13 @@ void EllipticInterfaceDLM<dim>::run() {
     setup_coupling();
     assemble();
     solve();
-    if (parameters.use_modified_AL_preconditioner && parameters.use_sqrt_2_rule)
-      parameters.gamma_AL /=
+    if (parameters.use_modified_AL_preconditioner &&
+        parameters.use_sqrt_2_rule) {
+      parameters.gamma_AL_background /=
           std::sqrt(2.);  // using sqrt(2)-rule from modified - AL paper
+      parameters.gamma_AL_immersed /=
+          std::sqrt(2.);  // using sqrt(2)-rule from modified - AL paper
+    }
     output_results(ref_cycle);
   }
 }
