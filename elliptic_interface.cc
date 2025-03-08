@@ -499,7 +499,9 @@ void EllipticInterfaceDLM<dim>::system_setup() {
   std::cout << "N DoF background: " << dof_handler_bg.n_dofs() << std::endl;
   std::cout << "N DoF immersed: " << dof_handler_fg.n_dofs() << std::endl;
 
-  std::cout << "=============================================" << std::endl;
+  std::cout << "==============================================================="
+               "========================="
+            << std::endl;
 }
 
 template <int dim>
@@ -711,8 +713,7 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
       // value of gamma.
       AssertThrow(
           parameters.gamma_AL2 <= 20.,
-          ExcMessage("gamma_AL2 is too large for modified AL
-          preconditioner."));
+          ExcMessage("gamma_AL2 is too large for modified ALpreconditioner."));
 
       SolverCG<Vector<double>> solver_lagrangian_scalar(
           parameters.inner_solver_control);
@@ -731,11 +732,21 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
       solver_fgmres.solve(system_operator, system_solution_block,
                           system_rhs_block, preconditioner_AL);
     } else {
-      // Check that gamma is not too small
+      // Check that gamma is not too small. We force also gamma2 to be equal to
+      // gamma.
       AssertThrow(
           parameters.gamma_AL > 1.,
           ExcMessage("Parameter gamma is probably too small for classical AL "
                      "preconditioner."));
+      parameters.gamma_AL2 = parameters.gamma_AL;
+
+      std::cout << "\t ************************************** WARNING "
+                   "************************************** \n"
+                   "\t USING IDEAL AL PRECONDITIONER. SHOULD BE USED ONLY FOR "
+                   "TESTING PURPOSES.\n"
+                << "\t ***********************************************"
+                   "************************************** "
+                << std::endl;
 
       auto AMG_A1 = linear_operator(stiffness_matrix_bg, amg_prec_A11);
       auto AMG_A2 = linear_operator(stiffness_matrix_fg, amg_prec_A22);
@@ -770,6 +781,8 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   convergence_table.add_value("DoF background", dof_handler_bg.n_dofs());
   convergence_table.add_value("DoF immersed", dof_handler_fg.n_dofs());
   convergence_table.add_value("gamma (AL)", parameters.gamma_AL);
+  if (parameters.use_modified_AL_preconditioner)
+    convergence_table.add_value("gamma2 (AL)", parameters.gamma_AL2);
   convergence_table.add_value("Outer iterations", n_outer_iterations);
 
   std::cout << "Solved in " << n_outer_iterations << " iterations"
@@ -858,10 +871,14 @@ void EllipticInterfaceDLM<dim>::output_results(
     convergence_table.evaluate_convergence_rates(
         "H1", ConvergenceTable::reduction_rate_log2);
   }
-  std::cout << "=============================================" << std::endl;
+  std::cout << "==============================================================="
+               "========================="
+            << std::endl;
   convergence_table.write_text(std::cout,
                                TableHandler::TextOutputFormat::org_mode_table);
-  std::cout << "=============================================" << std::endl;
+  std::cout << "==============================================================="
+               "========================="
+            << std::endl;
 
   // Do not dump grids to disk if they are too large
   if (tria_bg.n_active_cells() < 1e5) {
@@ -914,7 +931,9 @@ void EllipticInterfaceDLM<dim>::run() {
         outer_iterations.begin();
 
     parameters.gamma_AL = gamma_values[min_index];
-    std::cout << "=============================================" << std::endl;
+    std::cout << "============================================================="
+                 "==========================="
+              << std::endl;
     std::cout << "OPTIMAL VALUE FOR GAMMA FOUND EXPERIMENTALLY: "
               << parameters.gamma_AL << std::endl;
     std::cout << "START CONVERGENCE STUDY WITH GAMMA: " << parameters.gamma_AL
@@ -932,7 +951,9 @@ void EllipticInterfaceDLM<dim>::run() {
 
   for (unsigned int ref_cycle = 0; ref_cycle < parameters.n_refinement_cycles;
        ++ref_cycle) {
-    std::cout << "=============================================" << std::endl;
+    std::cout << "============================================================="
+                 "==========================="
+              << std::endl;
     std::cout << "Refinement cycle: " << ref_cycle << std::endl;
     std::cout << "gamma_AL= " << parameters.gamma_AL << std::endl;
     // Create the grids only during the first refinement cycle
