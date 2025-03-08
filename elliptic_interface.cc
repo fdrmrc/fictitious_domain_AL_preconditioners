@@ -23,6 +23,7 @@
 #include <deal.II/lac/block_linear_operator.h>
 #include <deal.II/lac/block_vector.h>
 #include <deal.II/lac/diagonal_matrix.h>
+#include <deal.II/lac/linear_operator.h>
 #include <deal.II/lac/linear_operator_tools.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/solver_cg.h>
@@ -180,6 +181,7 @@ class ProblemParameters : public ParameterAcceptor {
   // vs. modified AL) is chosen. We define it as mutable since with modified AL
   // its value may change upon mesh refinement.
   mutable double gamma_AL = 10.;
+  mutable double gamma_AL2 = 10.;
 
   mutable ParameterAcceptorProxy<ReductionControl> outer_solver_control;
   mutable ParameterAcceptorProxy<ReductionControl> inner_solver_control;
@@ -254,6 +256,7 @@ ProblemParameters<dim>::ProblemParameters()
                   "Use sqrt(2)-rule for gamma. It makes sense only for "
                   "modified AL variant.");
     add_parameter("gamma", gamma_AL);
+    add_parameter("gamma2", gamma_AL2);
     add_parameter("Verbosity level", verbosity_level);
   }
   leave_subsection();
@@ -379,6 +382,8 @@ EllipticInterfaceDLM<dim>::EllipticInterfaceDLM(
   AssertThrow(parameters.beta_2 > parameters.beta_1,
               ExcMessage("Beta_2 must be greater than Beta_1."));
   AssertThrow(parameters.gamma_AL > 0., ExcMessage("Gamma must be positive."));
+  AssertThrow(parameters.gamma_AL2 > 0.,
+              ExcMessage("Gamma2 must be positive."));
 
   // Check that some settings are used only when modified AL preconditioner is
   // selected.
@@ -655,10 +660,10 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   // Define augmented blocks. Notice that A22_aug is actually A_omega2 +
   // gamma_AL * Id
   auto A11_aug = A_omega1 + parameters.gamma_AL * Ct * invW * C;
-  auto A22_aug = A_omega2 + parameters.gamma_AL * M * invW * M;
+  auto A22_aug = A_omega2 + parameters.gamma_AL2 * M * invW * M;
   auto A12_aug = -parameters.gamma_AL * Ct * invW * M;
   // Next one is just transpose_operator(A12_aug);
-  auto A21_aug = -parameters.gamma_AL * M * invW * C;
+  auto A21_aug = -parameters.gamma_AL2 * M * invW * C;
 
   // Augmented (equivalent) system to be solved
   auto system_operator = block_operator<3, 3, BlockVector<double>>(
@@ -679,7 +684,7 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   stiffness_matrix_fg_plus_id.copy_from(stiffness_matrix_fg);
   // Add gamma*Id to A_2
   for (unsigned int i = 0; i < stiffness_matrix_fg_plus_id.m(); ++i)
-    stiffness_matrix_fg_plus_id.add(i, i, parameters.gamma_AL);
+    stiffness_matrix_fg_plus_id.add(i, i, parameters.gamma_AL2);
   amg_prec_A22.initialize(stiffness_matrix_fg_plus_id);
   std::cout << "Initialized AMG for A_2" << std::endl;
 
@@ -692,8 +697,10 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
     std::cout << "Done." << std::endl;
   }
 
+  typename SolverFGMRES<BlockVector<Number>>::AdditionalData data_fgmres;
+  data_fgmres.max_basis_size = 50;
   SolverFGMRES<BlockVector<Number>> solver_fgmres(
-      parameters.outer_solver_control);
+      parameters.outer_solver_control, data_fgmres);
 
   // Wrap the actual FGMRES solve in another scope in order to discard
   // setup-cost.
@@ -703,8 +710,9 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
       // If we use the modified AL preconditioner, we check if we use a small
       // value of gamma.
       AssertThrow(
-          parameters.gamma_AL <= 20.,
-          ExcMessage("gamma_AL is too large for modified AL preconditioner."));
+          parameters.gamma_AL2 <= 20.,
+          ExcMessage("gamma_AL2 is too large for modified AL
+          preconditioner."));
 
       SolverCG<Vector<double>> solver_lagrangian_scalar(
           parameters.inner_solver_control);
@@ -719,6 +727,7 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
                             A22_aug_inv);
 
       system_rhs_block.block(2) = 0;  // last row of the rhs is 0
+
       solver_fgmres.solve(system_operator, system_solution_block,
                           system_rhs_block, preconditioner_AL);
     } else {
