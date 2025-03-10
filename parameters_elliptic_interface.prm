@@ -2,7 +2,7 @@
 # ---------------------
 subsection Elliptic Interface Problem
 set Beta_1                             = 1
-set Beta_2                             = 10
+set Beta_2                             = 1e3
 set f                                  = 1
 set f_2                                = 2
 set Coupling quadrature order          = 3
@@ -15,6 +15,8 @@ set Output directory                   = .
 set Perform convergence study          = false
  # Check condition number of C*Ct after solve().
 set Perform sanity checks              = true
+# Perform fixed number of iterations within inner solvers.
+set Use fixed (inner) iterations       = true
 
 
   subsection AL preconditioner
@@ -28,7 +30,7 @@ set Use diagonal inverse           = false
 
    # Use the modified AL preconditioner. If false, the classical AL
    # preconditioner is used.
-set Use modified AL preconditioner = false
+set Use modified AL preconditioner = true
 
    # Use sqrt(2)-rule for gamma. It makes sense only for modified AL
    # variant.
@@ -54,13 +56,21 @@ set Reduction     = 1.e-20 # default: 1.e-2
 set Tolerance     = 1.e-4  # default: 1.e-10
   end
 
+   subsection Iteration number control
+set Log frequency    = 1
+set Log history      = false
+set Log result       = true
+set Max steps        = 30   # default: 100
+set Tolerance        = 1.e-4  # default: 1.e-10
+  end
+
   subsection Outer solver control
 set Log frequency = 1
 set Log history   = true   # default: false
 set Log result    = true
 set Max steps     = 1000   # default: 100
-set Reduction     = 1.e-6 # default: 1.e-2
-set Tolerance     = 1.e-20  # default: 1.e-10
+set Reduction     = 1.e-20 # default: 1.e-2
+set Tolerance     = 1.e-10  # default: 1.e-10
   end
 
   subsection Parameter study
