@@ -185,13 +185,20 @@ class ProblemParameters : public ParameterAcceptor {
 
   mutable ParameterAcceptorProxy<ReductionControl> outer_solver_control;
   mutable ParameterAcceptorProxy<ReductionControl> inner_solver_control;
+  mutable ParameterAcceptorProxy<IterationNumberControl>
+      iteration_number_control;
+
+  // If true, we use a fixed number of iterations inside inner solver (only for
+  // modified AL)
+  bool use_fixed_iterations = true;
 };
 
 template <int dim>
 ProblemParameters<dim>::ProblemParameters()
     : ParameterAcceptor("Elliptic Interface Problem/"),
       outer_solver_control("Outer solver control"),
-      inner_solver_control("Inner solver control") {
+      inner_solver_control("Inner solver control"),
+      iteration_number_control("Iteration number control") {
   add_parameter("FE degree background", background_space_finite_element_degree,
                 "", this->prm, Patterns::Integer(1));
 
@@ -214,6 +221,8 @@ ProblemParameters<dim>::ProblemParameters()
                 "Using analytical solution for immersed circle (f = f_2 = 1)");
   add_parameter("Export matrices for eigs-analysis",
                 export_matrices_for_eig_analysis);
+  add_parameter("Use fixed (inner) iterations", use_fixed_iterations,
+                "Perform fixed number of iterations within inner solvers. ");
 
   enter_subsection("Grid generation");
   {
@@ -291,6 +300,14 @@ ProblemParameters<dim>::ProblemParameters()
     ParameterAcceptor::prm.set("Log history", "false");
     ParameterAcceptor::prm.set("Log result", "true");
   });
+
+  // Same, but for the case when we want to use fixed number of iterations
+  iteration_number_control.declare_parameters_call_back.connect([]() -> void {
+    ParameterAcceptor::prm.set("Max steps", "100");
+    ParameterAcceptor::prm.set("Tolerance", "1.e-4");
+    ParameterAcceptor::prm.set("Log history", "false");
+    ParameterAcceptor::prm.set("Log result", "true");
+  });
 }
 
 // The real class of the ellitpic interface problem.
@@ -362,6 +379,8 @@ class EllipticInterfaceDLM {
   mutable TimerOutput computing_timer;
 
   mutable ConvergenceTable convergence_table;
+
+  std::unique_ptr<SolverCG<Vector<double>>> solver_lagrangian_scalar;
 };
 
 template <int dim>
@@ -731,13 +750,19 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
           ExcMessage(
               "gamma_AL_immersed is too large for modified ALpreconditioner."));
 
-      SolverCG<Vector<double>> solver_lagrangian_scalar(
-          parameters.inner_solver_control);
+      // We wither use a fixed number of iterations inside the inner solver...
+      if (parameters.use_fixed_iterations)
+        solver_lagrangian_scalar = std::make_unique<SolverCG<Vector<double>>>(
+            parameters.iteration_number_control);
+      else  //... or we iterate as usual.
+        solver_lagrangian_scalar = std::make_unique<SolverCG<Vector<double>>>(
+            parameters.inner_solver_control);
+
       // Define block preconditioner using AL approach
       auto A11_aug_inv =
-          inverse_operator(A11_aug, solver_lagrangian_scalar, amg_prec_A11);
+          inverse_operator(A11_aug, *solver_lagrangian_scalar, amg_prec_A11);
       auto A22_aug_inv =
-          inverse_operator(A22_aug, solver_lagrangian_scalar, amg_prec_A22);
+          inverse_operator(A22_aug, *solver_lagrangian_scalar, amg_prec_A22);
 
       EllipticInterfacePreconditioners::BlockTriangularALPreconditionerModified
           preconditioner_AL(C, M, invW, parameters.gamma_AL_background,
