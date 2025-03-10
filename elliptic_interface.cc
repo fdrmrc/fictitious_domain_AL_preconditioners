@@ -133,10 +133,10 @@ class ProblemParameters : public ParameterAcceptor {
   unsigned int n_refinement_cycles = 5;
 
   // Coefficients determining the size of the jump. beta_1 is usually kept at 1.
-  double beta_1 = 1.;
+  mutable double beta_1 = 1.;
 
   // beta_2, instead, is the one which is changed.
-  double beta_2 = 10.;
+  mutable double beta_2 = 10.;
 
   // Constants for the rhs: (f,f_2,0)
 
@@ -375,7 +375,6 @@ EllipticInterfaceDLM<dim>::EllipticInterfaceDLM(
       computing_timer(MPI_COMM_WORLD, std::cout,
                       TimerOutput::every_call_and_summary,
                       TimerOutput::wall_times) {
-  static_assert(dim == 2);
   // First, do some sanity checks on the parameters.
   AssertThrow(parameters.beta_1 > 0., ExcMessage("Beta_1 must be positive."));
   AssertThrow(parameters.beta_1 > 0., ExcMessage("Beta_2 must be positive."));
@@ -404,6 +403,10 @@ EllipticInterfaceDLM<dim>::EllipticInterfaceDLM(
     AssertThrow(parameters.use_modified_AL_preconditioner,
                 ExcMessage("The so-called sqrt(2)-rule makes sense only if you "
                            "use the modified AL preconditioner."));
+
+  if (parameters.do_convergence_study)
+    AssertThrow(dim == 2,
+                ExcNotImplemented());  // we check convergence rates only in 2D.
 }
 
 // Generate the grids for the background and immersed domains
@@ -413,6 +416,8 @@ void EllipticInterfaceDLM<dim>::generate_grids() {
 
   // The convergence test is constructed ad-hoc...
   if (parameters.do_convergence_study) {
+    parameters.beta_1 = 1.;
+    parameters.beta_2 = 10.;
     GridGenerator::hyper_cube(tria_bg, -1.4, 1.4, false);
     tria_bg.refine_global(parameters.initial_background_refinement);
     GridGenerator::hyper_ball(tria_fg, {0., 0.}, 1., true);
@@ -608,7 +613,7 @@ void EllipticInterfaceDLM<dim>::assemble() {
         fe_fg, dof_handler_fg, constraints_fg, stiffness_matrix_fg,
         system_rhs_block.block(1),
         0.,                                     // 0, no mass matrix
-        parameters.beta_2 - parameters.beta_1,  // only jump beta_2 - beta
+        parameters.beta_2 - parameters.beta_1,  // hardcoded before in this case
         0.);  // rhs value for convergence study
   else        // read rhs values (constants) from parameters file
     assemble_subsystem(
@@ -661,7 +666,10 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
     invW = linear_operator(diag_inverse);
   } else {
     // Use direct inversion
-    M_inv_umfpack.initialize(mass_matrix_fg);  // inverse immersed mass matrix
+    {
+      TimerOutput::Scope t(computing_timer, "Factorize mass matrix");
+      M_inv_umfpack.initialize(mass_matrix_fg);  // inverse immersed mass matrix
+    }
     invM = linear_operator(mass_matrix_fg, M_inv_umfpack);
     invW = invM * invM;
   }
@@ -739,6 +747,9 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
 
       solver_fgmres.solve(system_operator, system_solution_block,
                           system_rhs_block, preconditioner_AL);
+
+      std::cout << "Norm of solution: "
+                << system_solution_block.block(0).l2_norm() << std::endl;
     } else {
       // Check that gamma is not too small. We force also gamma2 to be equal to
       // gamma.
@@ -890,7 +901,7 @@ void EllipticInterfaceDLM<dim>::output_results(
             << std::endl;
 
   // Do not dump grids to disk if they are too large
-  if (tria_bg.n_active_cells() < 1e5) {
+  if (tria_bg.n_active_cells() < 1e6) {
     DataOut<dim> data_out_fg;
     data_out_fg.attach_dof_handler(dof_handler_fg);
     data_out_fg.add_data_vector(system_solution_block.block(1), "u2");
@@ -907,6 +918,7 @@ void EllipticInterfaceDLM<dim>::output_results(
     std::ofstream output_bg("solution-background-" + std::to_string(ref_cycle) +
                             ".vtu");
     data_out_bg.write_vtu(output_bg);
+    std::cout << "Written solutions to disk." << std::endl;
   }
 }
 
