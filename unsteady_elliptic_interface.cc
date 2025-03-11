@@ -131,9 +131,6 @@ class ProblemParameters : public ParameterAcceptor {
   std::string name_of_immersed_grid = "hyper_cube";
   std::string arguments_for_immersed_grid = "-0.14: 0.44: true";
 
-  // Number of refinement cycles
-  unsigned int n_refinement_cycles = 5;
-
   // Coefficients determining the size of the jump. beta_1 is usually kept at 1.
   mutable double beta_1 = 1.;
 
@@ -260,9 +257,6 @@ ProblemParameters<dim>::ProblemParameters()
     add_parameter(
         "Initial immersed refinement", initial_immersed_refinement,
         "Initial number of refinements used for the immersed domain Gamma.");
-    add_parameter(
-        "Refinemented cycles", n_refinement_cycles,
-        "Number of refinement cycles to perform convergence studies.");
   }
   leave_subsection();
 
@@ -284,20 +278,6 @@ ProblemParameters<dim>::ProblemParameters()
     add_parameter("gamma fluid", gamma_AL_background);
     add_parameter("gamma solid", gamma_AL_immersed);
     add_parameter("Verbosity level", verbosity_level);
-  }
-  leave_subsection();
-
-  enter_subsection("Parameter study");
-  {
-    add_parameter(
-        "Start gamma", start_gamma,
-        "Starting value for the range of values of gamma we want to test.");
-    add_parameter(
-        "Stop gamma", end_gamma,
-        "Last value for the range of values of gamma we want to test.");
-    add_parameter("Number of steps", n_steps_gamma,
-                  "Number of steps from start to stop. (Similar to linspace in "
-                  "Python or MatLab).");
   }
   leave_subsection();
 
@@ -917,9 +897,6 @@ void UnsteadyEllipticInterfaceDLM<dim>::output_results(
     convergence_table.evaluate_convergence_rates(
         "H1", ConvergenceTable::reduction_rate_log2);
   }
-  std::cout << "==============================================================="
-               "========================="
-            << std::endl;
 
   // Do not dump grids to disk if they are too large
   if (tria_bg.n_active_cells() < 1e6) {
@@ -941,6 +918,9 @@ void UnsteadyEllipticInterfaceDLM<dim>::output_results(
     data_out_bg.write_vtu(output_bg);
     std::cout << "Written solutions to disk." << std::endl;
   }
+  std::cout << "==============================================================="
+               "========================="
+            << std::endl;
 }
 
 template <int dim>
@@ -989,6 +969,7 @@ void UnsteadyEllipticInterfaceDLM<dim>::run() {
 
   unsigned int n_time_step = 0;
   while (current_time + parameters.dt <= parameters.final_time) {
+    std::cout << "Solving at t = " << current_time << std::endl;
     // adjust rhs
     rhs.block(0) =
         system_rhs_block.block(0) + (1. / parameters.dt) * mass_matrix_fluid *
@@ -1002,8 +983,9 @@ void UnsteadyEllipticInterfaceDLM<dim>::run() {
     if (n_time_step % parameters.output_frequency == 0)
       output_results(current_time + parameters.dt);
 
-    // update solution and new time
+    // update solution and time instant
     current_time += parameters.dt;
+    ++n_time_step;
     old_system_solution_block = system_solution_block;
   }
   convergence_table.add_value(
@@ -1017,7 +999,7 @@ void UnsteadyEllipticInterfaceDLM<dim>::run() {
 
 int main(int argc, char *argv[]) {
   try {
-    const int dim = 2;
+    const int dim = 2;  // 3
     Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
     deallog.depth_console(10);
 
