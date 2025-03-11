@@ -3,8 +3,6 @@
 subsection Elliptic Interface Problem
 set Beta_1                             = 1
 set Beta_2                             = 1e3
-set f                                  = 1
-set f_2                                = 2
 set Coupling quadrature order          = 3
 set Export matrices for eigs-analysis  = false
 set FE degree background               = 1
@@ -18,6 +16,17 @@ set Perform sanity checks              = true
 # Perform fixed number of iterations within inner solvers.
 set Use fixed (inner) iterations       = true
 
+  subsection Right hand side f_1
+set Function constants  =
+set Function expression = 1.
+set Variable names      = x,y,t
+  end
+
+  subsection Right hand side f_2 - f
+set Function constants  =
+set Function expression = 1.
+set Variable names      = x,y,t
+  end
 
   subsection AL preconditioner
    # Perform a parameter study on the AL parameter gamma on a coarse mesh to

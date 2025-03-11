@@ -3,6 +3,7 @@
 #include <deal.II/base/function.h>
 #include <deal.II/base/logstream.h>
 #include <deal.II/base/mpi.h>
+#include <deal.II/base/numbers.h>
 #include <deal.II/base/parameter_acceptor.h>
 #include <deal.II/base/parameter_handler.h>
 #include <deal.II/base/parsed_function.h>
@@ -38,7 +39,9 @@
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/numerics/vector_tools_common.h>
 
+#include <cmath>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -138,14 +141,6 @@ class ProblemParameters : public ParameterAcceptor {
   // beta_2, instead, is the one which is changed.
   mutable double beta_2 = 10.;
 
-  // Constants for the rhs: (f,f_2,0)
-
-  // First entry of the rhs, for u_1
-  double f = 1.;
-
-  // Second entry for the rhs, for u_2
-  double f_2 = 2.;
-
   std::list<types::boundary_id> dirichlet_ids{0, 1, 2, 3};
 
   unsigned int background_space_finite_element_degree = 1;
@@ -188,6 +183,10 @@ class ProblemParameters : public ParameterAcceptor {
   mutable ParameterAcceptorProxy<IterationNumberControl>
       iteration_number_control;
 
+  // We define f_1 and f_2 - f right-hand sides
+  ParameterAcceptorProxy<Functions::ParsedFunction<dim>> f_1;
+  ParameterAcceptorProxy<Functions::ParsedFunction<dim>> f_2_minus_f;
+
   // If true, we use a fixed number of iterations inside inner solver (only for
   // modified AL)
   bool use_fixed_iterations = true;
@@ -198,7 +197,9 @@ ProblemParameters<dim>::ProblemParameters()
     : ParameterAcceptor("Elliptic Interface Problem/"),
       outer_solver_control("Outer solver control"),
       inner_solver_control("Inner solver control"),
-      iteration_number_control("Iteration number control") {
+      iteration_number_control("Iteration number control"),
+      f_1("Right hand side f_1"),
+      f_2_minus_f("Right hand side f_2 - f") {
   add_parameter("FE degree background", background_space_finite_element_degree,
                 "", this->prm, Patterns::Integer(1));
 
@@ -211,8 +212,6 @@ ProblemParameters<dim>::ProblemParameters()
 
   add_parameter("Beta_1", beta_1);
   add_parameter("Beta_2", beta_2);
-  add_parameter("f", f, "Rhs for u_1.");
-  add_parameter("f_2", f_2, "Rhs for u_2.");
 
   add_parameter("Homogeneous Dirichlet boundary ids", dirichlet_ids);
   add_parameter("Perform sanity checks", do_sanity_checks,
@@ -308,6 +307,12 @@ ProblemParameters<dim>::ProblemParameters()
     ParameterAcceptor::prm.set("Log history", "false");
     ParameterAcceptor::prm.set("Log result", "true");
   });
+
+  // Right hand sides
+  f_1.declare_parameters_call_back.connect(
+      []() -> void { ParameterAcceptor::prm.set("Function expression", "1"); });
+  f_2_minus_f.declare_parameters_call_back.connect(
+      []() -> void { ParameterAcceptor::prm.set("Function expression", "1"); });
 }
 
 // The real class of the ellitpic interface problem.
@@ -334,7 +339,7 @@ class EllipticInterfaceDLM {
                           const AffineConstraints<double> &constraints,
                           SparseMatrix<Number> &system_matrix,
                           Vector<Number> &system_rhs, double rho, double mu,
-                          double rhs_value) const;
+                          const Function<dim> &rhs_function) const;
 
   void assemble();
 
@@ -426,6 +431,15 @@ EllipticInterfaceDLM<dim>::EllipticInterfaceDLM(
   if (parameters.do_convergence_study)
     AssertThrow(dim == 2,
                 ExcNotImplemented());  // we check convergence rates only in 2D.
+
+  // Check if the folder where we want to save solutions actually exists
+  if (std::filesystem::exists(parameters.output_directory)) {
+    Assert(std::filesystem::is_directory(parameters.output_directory),
+           ExcMessage("You specified <" + parameters.output_directory +
+                      "> as the output directory in the input file, "
+                      "but this is not in fact a directory."));
+  } else
+    std::filesystem::create_directory(parameters.output_directory);
 }
 
 // Generate the grids for the background and immersed domains
@@ -475,7 +489,7 @@ void EllipticInterfaceDLM<dim>::generate_grids() {
             << "h immersed = " << h_immersed << "\n"
             << "grids ratio (background/immersed) = " << ratio << std::endl;
 
-  AssertThrow(ratio < 2.2 && ratio > 0.45,
+  AssertThrow(ratio < 2.2 && ratio > 0.4,
               ExcMessage("Check mesh sizes of the two grids."));
 
   // Do not dump grids to disk if they are too large
@@ -572,7 +586,7 @@ void EllipticInterfaceDLM<dim>::assemble_subsystem(
     const FiniteElement<dim> &fe, const DoFHandler<dim> &dof_handler,
     const AffineConstraints<double> &constraints,
     SparseMatrix<Number> &system_matrix, Vector<Number> &system_rhs, double rho,
-    double mu, double rhs_value) const {
+    double mu, const Function<dim> &rhs_function) const {
   const QGauss<dim> quad(fe.degree + 1);
 
   FEValues<dim> fe_values(fe, quad,
@@ -585,12 +599,14 @@ void EllipticInterfaceDLM<dim>::assemble_subsystem(
   Vector<double> cell_rhs(dofs_per_cell);
 
   std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
+  std::vector<double> rhs_values(fe_values.get_quadrature_points().size());
 
   for (const auto &cell : dof_handler.active_cell_iterators()) {
     cell_matrix = 0;
     cell_rhs = 0;
 
     fe_values.reinit(cell);
+    rhs_function.value_list(fe_values.get_quadrature_points(), rhs_values);
 
     for (const unsigned int q_index : fe_values.quadrature_point_indices()) {
       for (const unsigned int i : fe_values.dof_indices()) {
@@ -602,7 +618,7 @@ void EllipticInterfaceDLM<dim>::assemble_subsystem(
                      fe_values.shape_grad(j, q_index)) *  // grad v
               fe_values.JxW(q_index);                     // dx
 
-        cell_rhs(i) += (rhs_value *                          // f(x)
+        cell_rhs(i) += (rhs_values[q_index] *                // f(x)
                         fe_values.shape_value(i, q_index) *  // phi_i(x_q)
                         fe_values.JxW(q_index));             // dx
       }
@@ -623,7 +639,7 @@ void EllipticInterfaceDLM<dim>::assemble() {
                      system_rhs_block.block(0),
                      0.,                 // 0, no mass matrix
                      parameters.beta_1,  // only beta_1 (which is usually 1)
-                     parameters.f);      // rhs value, f
+                     parameters.f_1);    // rhs value, f
 
   // immersed matrix A2 = (beta_2 - beta) (grad u,grad v)
   // The rhs changes if we want to do a convergence study.
@@ -633,18 +649,20 @@ void EllipticInterfaceDLM<dim>::assemble() {
         system_rhs_block.block(1),
         0.,                                     // 0, no mass matrix
         parameters.beta_2 - parameters.beta_1,  // hardcoded before in this case
-        0.);  // rhs value for convergence study
-  else        // read rhs values (constants) from parameters file
+        Functions::ConstantFunction<dim>{
+            0.});  // rhs value for convergence study
+  else             // read rhs values (constants) from parameters file
     assemble_subsystem(
         fe_fg, dof_handler_fg, constraints_fg, stiffness_matrix_fg,
         system_rhs_block.block(1),
         0.,                                     // 0, no mass matrix
         parameters.beta_2 - parameters.beta_1,  // only jump beta_2 - beta
-        parameters.f_2 - parameters.f);         // rhs value, f2-f
+        parameters.f_2_minus_f);                // rhs value, f2-f
 
   //  mass matrix immersed
   assemble_subsystem(fe_fg, dof_handler_fg, constraints_fg, mass_matrix_fg,
-                     system_rhs_block.block(2), 1., 0., 0.);
+                     system_rhs_block.block(2), 1., 0.,
+                     Functions::ConstantFunction<dim>{0.});
 }
 
 void output_double_number(double input, const std::string &text) {
@@ -932,7 +950,8 @@ void EllipticInterfaceDLM<dim>::output_results(
     data_out_fg.add_data_vector(system_solution_block.block(1), "u2");
     data_out_fg.add_data_vector(system_solution_block.block(2), "lambda");
     data_out_fg.build_patches();
-    std::ofstream output_fg("solution-immersed-" + std::to_string(ref_cycle) +
+    std::ofstream output_fg(parameters.output_directory + "/" +
+                            "solution-immersed-" + std::to_string(ref_cycle) +
                             ".vtu");
     data_out_fg.write_vtu(output_fg);
 
@@ -940,10 +959,11 @@ void EllipticInterfaceDLM<dim>::output_results(
     data_out_bg.attach_dof_handler(dof_handler_bg);
     data_out_bg.add_data_vector(system_solution_block.block(0), "u");
     data_out_bg.build_patches();
-    std::ofstream output_bg("solution-background-" + std::to_string(ref_cycle) +
+    std::ofstream output_bg(parameters.output_directory + "/" +
+                            "solution-background-" + std::to_string(ref_cycle) +
                             ".vtu");
     data_out_bg.write_vtu(output_bg);
-    std::cout << "Written solutions to disk." << std::endl;
+    std::cout << "Solutions written to disk." << std::endl;
   }
 }
 
