@@ -39,7 +39,9 @@
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/numerics/vector_tools_common.h>
 
+#include <algorithm>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -137,13 +139,9 @@ class ProblemParameters : public ParameterAcceptor {
   // beta_2, instead, is the one which is changed.
   mutable double beta_2 = 10.;
 
-  // Constants for the rhs: (f,f_2,0)
-
-  // First entry of the rhs, for u_1
-  double f = 1.;
-
-  // Second entry for the rhs, for u_2
-  double f_2 = 2.;
+  // We define f_1 and f_2 - f right-hand sides
+  ParameterAcceptorProxy<Functions::ParsedFunction<dim>> f_1;
+  ParameterAcceptorProxy<Functions::ParsedFunction<dim>> f_2_minus_f;
 
   std::list<types::boundary_id> dirichlet_ids{0, 1, 2, 3};
 
@@ -182,8 +180,8 @@ class ProblemParameters : public ParameterAcceptor {
   mutable double gamma_AL_background = 10.;
   mutable double gamma_AL_immersed = 10.;
 
-  mutable ParameterAcceptorProxy<ReductionControl> outer_solver_control;
   mutable ParameterAcceptorProxy<ReductionControl> inner_solver_control;
+  mutable ParameterAcceptorProxy<ReductionControl> outer_solver_control;
   mutable ParameterAcceptorProxy<IterationNumberControl>
       iteration_number_control;
 
@@ -200,8 +198,10 @@ class ProblemParameters : public ParameterAcceptor {
 template <int dim>
 ProblemParameters<dim>::ProblemParameters()
     : ParameterAcceptor("Elliptic Interface Problem/"),
-      outer_solver_control("Outer solver control"),
+      f_1("Right hand side f_1"),
+      f_2_minus_f("Right hand side f_2 - f"),
       inner_solver_control("Inner solver control"),
+      outer_solver_control("Outer solver control"),
       iteration_number_control("Iteration number control") {
   add_parameter("FE degree background", background_space_finite_element_degree,
                 "", this->prm, Patterns::Integer(1));
@@ -215,8 +215,6 @@ ProblemParameters<dim>::ProblemParameters()
 
   add_parameter("Beta_1", beta_1);
   add_parameter("Beta_2", beta_2);
-  add_parameter("f", f, "Rhs for u_1.");
-  add_parameter("f_2", f_2, "Rhs for u_2.");
 
   add_parameter("Homogeneous Dirichlet boundary ids", dirichlet_ids);
   add_parameter("Perform sanity checks", do_sanity_checks,
@@ -305,6 +303,12 @@ ProblemParameters<dim>::ProblemParameters()
     ParameterAcceptor::prm.set("Log history", "false");
     ParameterAcceptor::prm.set("Log result", "true");
   });
+
+  // Right hand sides
+  f_1.declare_parameters_call_back.connect(
+      []() -> void { ParameterAcceptor::prm.set("Function expression", "1"); });
+  f_2_minus_f.declare_parameters_call_back.connect(
+      []() -> void { ParameterAcceptor::prm.set("Function expression", "1"); });
 }
 
 // The real class of the ellitpic interface problem.
@@ -331,7 +335,7 @@ class UnsteadyEllipticInterfaceDLM {
                           const AffineConstraints<double> &constraints,
                           SparseMatrix<Number> &system_matrix,
                           Vector<Number> &system_rhs, double rho, double mu,
-                          double rhs_value) const;
+                          const Function<dim> &rhs_function) const;
 
   void assemble();
 
@@ -387,10 +391,12 @@ class UnsteadyEllipticInterfaceDLM {
 
   // AL preconditioner-related objects.
 
+  // The modified-AL preconditioner
   std::unique_ptr<typename EllipticInterfacePreconditioners::
                       BlockTriangularALPreconditionerModified>
       preconditioner_AL;
 
+  // Matrices of the FD-DLM problem
   LinearOperator<Vector<double>> A_omega1;
   LinearOperator<Vector<double>> A_omega2;
   LinearOperator<Vector<double>> M;
@@ -398,11 +404,13 @@ class UnsteadyEllipticInterfaceDLM {
   LinearOperator<Vector<double>> Ct;
   LinearOperator<Vector<double>> C;
 
+  // Augmented blocks
   LinearOperator<Vector<double>> A11_aug;
   LinearOperator<Vector<double>> A22_aug;
   LinearOperator<Vector<double>> A12_aug;
   LinearOperator<Vector<double>> A21_aug;
 
+  // AMG preconditioners and inverse operators to be used in the preconditioner
   TrilinosWrappers::PreconditionAMG amg_prec_A11;
   TrilinosWrappers::PreconditionAMG amg_prec_A22;
   LinearOperator<Vector<double>> A11_aug_inv;
@@ -411,10 +419,11 @@ class UnsteadyEllipticInterfaceDLM {
   LinearOperator<Vector<double>> invW;
 
   DiagonalMatrix<Vector<double>> diag_inverse;
-  SparseDirectUMFPACK M_inv_umfpack;
+  SparseDirectUMFPACK M_inv_umfpack;  // used only if direct inverse is
+                                      // required
 
-  // BlockLinearOperator<BlockVector<double>> system_operator; //TODO
-  BlockSparseMatrix<double> dummy;
+  // BlockLinearOperator<BlockVector<double>> system_operator; //TODO: define it
+  // once and for all
 };
 
 template <int dim>
@@ -463,6 +472,15 @@ UnsteadyEllipticInterfaceDLM<dim>::UnsteadyEllipticInterfaceDLM(
   if (parameters.do_convergence_study)
     AssertThrow(dim == 2,
                 ExcNotImplemented());  // we check convergence rates only in 2D.
+
+  // Check if the folder where we want to save solutions actually exists
+  if (std::filesystem::exists(parameters.output_directory)) {
+    Assert(std::filesystem::is_directory(parameters.output_directory),
+           ExcMessage("You specified <" + parameters.output_directory +
+                      "> as the output directory in the input file, "
+                      "but this is not in fact a directory."));
+  } else
+    std::filesystem::create_directory(parameters.output_directory);
 }
 
 // Generate the grids for the background and immersed domains
@@ -512,7 +530,7 @@ void UnsteadyEllipticInterfaceDLM<dim>::generate_grids() {
             << "h immersed = " << h_immersed << "\n"
             << "grids ratio (background/immersed) = " << ratio << std::endl;
 
-  AssertThrow(ratio < 2.2 && ratio > 0.45,
+  AssertThrow(ratio < 2.2 && ratio > 0.4,
               ExcMessage("Check mesh sizes of the two grids."));
 
   // Do not dump grids to disk if they are too large
@@ -570,7 +588,7 @@ void UnsteadyEllipticInterfaceDLM<dim>::system_setup() {
   std::cout << "N DoF immersed: " << dof_handler_fg.n_dofs() << std::endl;
 
   std::cout << "==============================================================="
-               "========================="
+               "=================================================="
             << std::endl;
 }
 
@@ -611,7 +629,7 @@ void UnsteadyEllipticInterfaceDLM<dim>::assemble_subsystem(
     const FiniteElement<dim> &fe, const DoFHandler<dim> &dof_handler,
     const AffineConstraints<double> &constraints,
     SparseMatrix<Number> &system_matrix, Vector<Number> &system_rhs, double rho,
-    double mu, double rhs_value) const {
+    double mu, const Function<dim> &rhs_function) const {
   const QGauss<dim> quad(fe.degree + 1);
 
   FEValues<dim> fe_values(fe, quad,
@@ -622,6 +640,7 @@ void UnsteadyEllipticInterfaceDLM<dim>::assemble_subsystem(
 
   FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
   Vector<double> cell_rhs(dofs_per_cell);
+  std::vector<double> rhs_values(fe_values.get_quadrature_points().size());
 
   std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
 
@@ -630,6 +649,7 @@ void UnsteadyEllipticInterfaceDLM<dim>::assemble_subsystem(
     cell_rhs = 0;
 
     fe_values.reinit(cell);
+    rhs_function.value_list(fe_values.get_quadrature_points(), rhs_values);
 
     for (const unsigned int q_index : fe_values.quadrature_point_indices()) {
       for (const unsigned int i : fe_values.dof_indices()) {
@@ -641,7 +661,7 @@ void UnsteadyEllipticInterfaceDLM<dim>::assemble_subsystem(
                      fe_values.shape_grad(j, q_index)) *  // grad v
               fe_values.JxW(q_index);                     // dx
 
-        cell_rhs(i) += (rhs_value *                          // f(x)
+        cell_rhs(i) += (rhs_values[q_index] *                // f(x)
                         fe_values.shape_value(i, q_index) *  // phi_i(x_q)
                         fe_values.JxW(q_index));             // dx
       }
@@ -662,7 +682,7 @@ void UnsteadyEllipticInterfaceDLM<dim>::assemble() {
                      system_rhs_block.block(0),
                      (1. / parameters.dt),  // M/dt
                      parameters.beta_1,     // only beta_1 (which is usually 1)
-                     parameters.f);         // rhs value, f
+                     parameters.f_1);       // rhs value, f
 
   // immersed matrix A2 = (beta_2 - beta) (grad u,grad v)
   // The rhs changes if we want to do a convergence study.
@@ -672,22 +692,25 @@ void UnsteadyEllipticInterfaceDLM<dim>::assemble() {
         system_rhs_block.block(1),
         0.,                                     // 0, no mass matrix
         parameters.beta_2 - parameters.beta_1,  // hardcoded before in this case
-        0.);  // rhs value for convergence study
-  else        // read rhs values (constants) from parameters file
+        Functions::ConstantFunction<dim>(
+            0.));  // rhs value for convergence study
+  else             // read rhs values (constants) from parameters file
     assemble_subsystem(
         fe_fg, dof_handler_fg, constraints_fg, stiffness_matrix_fg,
         system_rhs_block.block(1),
         (1. / parameters.dt),                   // M/dt
         parameters.beta_2 - parameters.beta_1,  // only jump beta_2 - beta
-        parameters.f_2 - parameters.f);         // rhs value, f2-f
+        parameters.f_2_minus_f);                // rhs value, f2-f
 
   //  mass matrix fluid
   assemble_subsystem(fe_bg, dof_handler_bg, constraints_bg, mass_matrix_bg,
-                     system_rhs_block.block(0), 1., 0., 0.);
+                     system_rhs_block.block(0), 1., 0.,
+                     Functions::ConstantFunction<dim>(0.));
 
   //  mass matrix immersed
   assemble_subsystem(fe_fg, dof_handler_fg, constraints_fg, mass_matrix_fg,
-                     system_rhs_block.block(2), 1., 0., 0.);
+                     system_rhs_block.block(2), 1., 0.,
+                     Functions::ConstantFunction<dim>(0.));
 }
 
 void output_double_number(double input, const std::string &text) {
@@ -919,7 +942,7 @@ void UnsteadyEllipticInterfaceDLM<dim>::output_results(
     std::cout << "Written solutions to disk." << std::endl;
   }
   std::cout << "==============================================================="
-               "========================="
+               "=================================================="
             << std::endl;
 }
 
@@ -970,7 +993,7 @@ void UnsteadyEllipticInterfaceDLM<dim>::run() {
   unsigned int n_time_step = 0;
   while (current_time + parameters.dt <= parameters.final_time) {
     std::cout << "Solving at t = " << current_time << std::endl;
-    // adjust rhs
+    // update rhs
     rhs.block(0) =
         system_rhs_block.block(0) + (1. / parameters.dt) * mass_matrix_fluid *
                                         old_system_solution_block.block(0);
@@ -988,6 +1011,14 @@ void UnsteadyEllipticInterfaceDLM<dim>::run() {
     ++n_time_step;
     old_system_solution_block = system_solution_block;
   }
+  // Report min, max, avg number of outer iterations
+
+  convergence_table.add_value(
+      "Max num. outer iter",
+      *std::max_element(iteration_counts.cbegin(), iteration_counts.cend()));
+  convergence_table.add_value(
+      "Min num. outer iter",
+      *std::min_element(iteration_counts.cbegin(), iteration_counts.cend()));
   convergence_table.add_value(
       "Average num. outer iter",
       std::accumulate(iteration_counts.cbegin(), iteration_counts.cend(), 0.) /
