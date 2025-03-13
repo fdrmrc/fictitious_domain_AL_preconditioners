@@ -1,27 +1,8 @@
-# #
-# CMake script for the step-60 tutorial program:
-# #
-
-# Set the name of the project and target:
-set(TARGET "block_demo")
-
-# Declare all source files the target consists of. Here, this is only
-# the one step-X.cc file, but as you expand your project you may wish
-# to add other source files as well. If your project becomes much larger,
-# you may want to either replace the following statement by something like
-# file(GLOB_RECURSE TARGET_SRC  "source/*.cc")
-# file(GLOB_RECURSE TARGET_INC  "include/*.h")
-# set(TARGET_SRC ${TARGET_SRC}  ${TARGET_INC})
-# or switch altogether to the large project CMakeLists.txt file discussed
-# in the "CMake in user projects" page accessible from the "User info"
-# page of the documentation.
-set(TARGET_SRC
-  ${TARGET}.cc
-)
-
-# Usually, you will not need to modify anything beyond this point...
+# Set the name of the project
 cmake_minimum_required(VERSION 3.13.4)
+project(AL_preconditioning)
 
+# Find deal.II library
 find_package(deal.II 9.6.0
   HINTS ${deal.II_DIR} ${DEAL_II_DIR} ../ ../../ $ENV{DEAL_II_DIR}
 )
@@ -34,15 +15,17 @@ if(NOT ${deal.II_FOUND})
   )
 endif()
 
-#
-# Are all dependencies fulfilled?
-#
-if(NOT DEAL_II_WITH_UMFPACK OR NOT DEAL_II_WITH_MUPARSER)
+# Check required dependencies
+if(NOT(DEAL_II_WITH_TRILINOS) OR NOT DEAL_II_WITH_P4EST OR NOT DEAL_II_WITH_UMFPACK OR NOT DEAL_II_WITH_MUPARSER)
   message(FATAL_ERROR "
 Error! This tutorial requires a deal.II library that was configured with the following options:
+    DEAL_II_WITH_TRILINOS = ON
+    DEAL_II_WITH_P4EST = ON
     DEAL_II_WITH_MUPARSER = ON
     DEAL_II_WITH_UMFPACK = ON
 However, the deal.II library found at ${DEAL_II_PATH} was configured with these options:
+    DEAL_II_WITH_TRILINOS = ${DEAL_II_WITH_TRILINOS}
+    DEAL_II_WITH_P4EST = ${DEAL_II_WITH_P4EST}
     DEAL_II_WITH_MUPARSER = ${DEAL_II_WITH_MUPARSER}
     DEAL_II_WITH_UMFPACK = ${DEAL_II_WITH_UMFPACK}
 This conflicts with the requirements."
@@ -50,5 +33,15 @@ This conflicts with the requirements."
 endif()
 
 deal_ii_initialize_cached_variables()
-project(${TARGET})
-deal_ii_invoke_autopilot()
+
+# Define multiple executables
+add_executable(immersed_laplace block_demo.cc)
+add_executable(stokes_immersed_boundary stokes_immersed_boundary.cc)
+add_executable(elliptic_interface elliptic_interface.cc)
+add_executable(unsteady_elliptic_interface unsteady_elliptic_interface.cc)
+
+# Link each executable with deal.II
+deal_ii_setup_target(immersed_laplace)
+deal_ii_setup_target(stokes_immersed_boundary)
+deal_ii_setup_target(elliptic_interface)
+deal_ii_setup_target(unsteady_elliptic_interface)

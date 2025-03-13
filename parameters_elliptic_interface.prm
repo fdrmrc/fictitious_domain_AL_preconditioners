@@ -1,0 +1,99 @@
+# Listing of Parameters
+# ---------------------
+subsection Elliptic Interface Problem
+set Beta_1                             = 1
+set Beta_2                             = 1e3
+set f                                  = 1
+set f_2                                = 2
+set Coupling quadrature order          = 3
+set Export matrices for eigs-analysis  = false
+set FE degree background               = 1
+set FE degree immersed                 = 1
+set Homogeneous Dirichlet boundary ids = 0, 1, 2, 3
+set Output directory                   = .
+ # Using analytical solution for immersed circle (f = f_2 = 1)
+set Perform convergence study          = false
+ # Check condition number of C*Ct after solve().
+set Perform sanity checks              = true
+# Perform fixed number of iterations within inner solvers.
+set Use fixed (inner) iterations       = true
+
+
+  subsection AL preconditioner
+   # Perform a parameter study on the AL parameter gamma on a coarse mesh to
+   # select experimentally an optimal value.
+set Do parameter study             = false
+
+   # Use diagonal approximation for the inverse (squared) of the immersed
+   # mass matrix.
+set Use diagonal inverse           = false
+
+   # Use the modified AL preconditioner. If false, the classical AL
+   # preconditioner is used.
+set Use modified AL preconditioner = true
+
+   # Use sqrt(2)-rule for gamma. It makes sense only for modified AL
+   # variant.
+set Use sqrt(2)-rule for gamma     = false
+set Verbosity level                = 10
+set gamma fluid                    = 10
+set gamma solid                    = 1e-2
+  end
+
+  subsection Grid generation
+set Background grid generator           = hyper_cube
+set Background grid generator arguments = -1: 1: true
+set Immersed grid generator             = hyper_cube
+set Immersed grid generator arguments   = -0.14: 0.44: true
+  end
+
+  subsection Inner solver control
+set Log frequency = 1
+set Log history   = false
+set Log result    = true
+set Max steps     = 1000   # default: 100
+set Reduction     = 1.e-20 # default: 1.e-2
+set Tolerance     = 1.e-4  # default: 1.e-10
+  end
+
+   subsection Iteration number control
+set Log frequency    = 1
+set Log history      = false
+set Log result       = true
+set Max steps        = 30   # default: 100
+set Tolerance        = 1.e-4  # default: 1.e-10
+  end
+
+  subsection Outer solver control
+set Log frequency = 1
+set Log history   = true   # default: false
+set Log result    = true
+set Max steps     = 1000   # default: 100
+set Reduction     = 1.e-20 # default: 1.e-2
+set Tolerance     = 1.e-10  # default: 1.e-10
+  end
+
+  subsection Parameter study
+   # Number of steps from start to stop. (Similar to linspace in Python or
+   # MatLab).
+set Number of steps = 100
+
+   # Starting value for the range of values of gamma we want to test.
+set Start gamma     = 0.001
+
+   # Last value for the range of values of gamma we want to test.
+set Stop gamma      = 1
+  end
+
+  subsection Refinement and remeshing
+   # Initial number of refinements used for the background domain Omega.
+set Initial background refinement = 4
+
+   # Initial number of refinements used for the immersed domain Gamma.
+set Initial immersed refinement   = 2
+
+   # Number of refinement cycles to perform convergence studies.
+set Refinemented cycles           = 5
+  end
+
+end
