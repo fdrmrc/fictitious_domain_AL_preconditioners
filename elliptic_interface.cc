@@ -599,7 +599,7 @@ void EllipticInterfaceDLM<dim>::assemble_subsystem(
   Vector<double> cell_rhs(dofs_per_cell);
 
   std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
-  std::vector<double> rhs_values(fe_values.get_quadrature_points().size());
+  std::vector<double> rhs_values(quad.size());
 
   for (const auto &cell : dof_handler.active_cell_iterators()) {
     cell_matrix = 0;
