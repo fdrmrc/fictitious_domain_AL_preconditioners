@@ -919,159 +919,157 @@ unsigned int StokesDLM<dim>::solve() {
   auto Bt = linear_operator(stokes_matrix.block(0, 1));
   auto B = linear_operator(stokes_matrix.block(1, 0));
 
+  // auto system_operator = block_operator<4, 4, BlockVector<double>>(
+  //     {{{{A, NullF, Ct, Bt}},
+  //       {{NullS, A_omega2, -1. * M, NullS}},
+  //       {{C, -1. * M, NullCouplin, NullS}},
+  //       {{B, NullS, NullS, NullS}}}});
+
+  // SolverGMRES<BlockVector<double>> solver(parameters.outer_solver_control);
+  // PreconditionIdentity prec_id;
+
+  // system_rhs_block.block(0) = stokes_rhs.block(0);
+
+  // solver.solve(system_operator, system_solution_block, system_rhs_block,
+  //              prec_id);
+
+  // We create empty operators for the action of the inverse of W. Depending
+  // on the the choice, we either approximate it using the diagonal of the
+  // mass matrix (squaring the entries) or we use the direct inversion of the
+  // mass matrix provided by UMFPACK.
+  auto invM = null_operator(M);
+  auto invW = null_operator(M);
+  SparseDirectUMFPACK M_inv_umfpack;
+  SparseDirectUMFPACK Mp_inv_umfpack;
+  Mp_inv_umfpack.initialize(preconditioner_matrix.block(1, 1));
+  auto invMp =
+      linear_operator(preconditioner_matrix.block(1, 1), Mp_inv_umfpack);
+
+  // Using inverse of diagonal mass matrix (squared)
+  Vector<double> inverse_diag_mass_squared(dof_handler_fg.n_dofs());
+  for (unsigned int i = 0; i < dof_handler_fg.n_dofs(); ++i)
+    inverse_diag_mass_squared[i] =
+        1. / (mass_matrix_fg.diag_element(i) * mass_matrix_fg.diag_element(i));
+
+  DiagonalMatrix<Vector<double>> diag_inverse;
+  if (parameters.use_diagonal_inverse == true) {
+    diag_inverse.reinit(inverse_diag_mass_squared);
+    invW = linear_operator(diag_inverse);
+  } else {
+    // Use direct inversion
+    {
+      TimerOutput::Scope t(computing_timer, "Factorize mass matrix");
+      M_inv_umfpack.initialize(mass_matrix_fg);  // inverse immersed mass matrix
+    }
+    invM = linear_operator(mass_matrix_fg, M_inv_umfpack);
+    invW = invM * invM;
+  }
+
+  // Define augmented blocks. Notice that A22_aug is actually A_omega2 +
+  // gamma_AL_background * Id
+  auto A11_aug = A + parameters.gamma_AL_background * Ct * invW * C +
+                 parameters.gamma_AL_background * Bt * invMp * B;
+  auto A22_aug = A_omega2 + parameters.gamma_AL_immersed * M * invW * M;
+  auto A12_aug = -parameters.gamma_AL_background * Ct * invW * M;
+  // Next one is just transpose_operator(A12_aug);
+  auto A21_aug = -parameters.gamma_AL_immersed * M * invW * C;
+
   // Augmented (equivalent) system to be solved
   auto system_operator = block_operator<4, 4, BlockVector<double>>(
-      {{{{A, NullF, Ct, Bt}},
-        {{NullS, A_omega2, -1. * M, NullS}},
+      {{{{A11_aug, A12_aug, Ct, Bt}},
+        {{A21_aug, A22_aug, -1. * M, NullS}},
         {{C, -1. * M, NullCouplin, NullS}},
         {{B, NullS, NullS, NullS}}}});
 
-  SolverGMRES<BlockVector<double>> solver(parameters.outer_solver_control);
-  PreconditionIdentity prec_id;
-
-  system_rhs_block.block(0) = stokes_rhs.block(0);
-
-  std::cout << "Check : " << std::endl;
-  auto test = system_operator * system_rhs_block;
-  std::cout << "Check rhs : done" << std::endl;
-  auto test2 = system_operator * system_solution_block;
-  std::cout << "Check sol: done" << std::endl;
-
-  solver.solve(system_operator, system_solution_block, system_rhs_block,
-               prec_id);
-
-  return n_outer_iterations;
-
-  // // We create empty operators for the action of the inverse of W. Depending
-  // // on the the choice, we either approximate it using the diagonal of the
-  // // mass matrix (squaring the entries) or we use the direct inversion of the
-  // // mass matrix provided by UMFPACK.
-  // auto invM = null_operator(M);
-  // auto invW = null_operator(M);
-  // SparseDirectUMFPACK M_inv_umfpack;
-
-  // // Using inverse of diagonal mass matrix (squared)
-  // Vector<double> inverse_diag_mass_squared(dof_handler_fg.n_dofs());
-  // for (unsigned int i = 0; i < dof_handler_fg.n_dofs(); ++i)
-  //   inverse_diag_mass_squared[i] =
-  //       1. / (mass_matrix_fg.diag_element(i) *
-  //       mass_matrix_fg.diag_element(i));
-
-  // DiagonalMatrix<Vector<double>> diag_inverse;
-  // if (parameters.use_diagonal_inverse == true) {
-  //   diag_inverse.reinit(inverse_diag_mass_squared);
-  //   invW = linear_operator(diag_inverse);
-  // } else {
-  //   // Use direct inversion
-  //   {
-  //     TimerOutput::Scope t(computing_timer, "Factorize mass matrix");
-  //     M_inv_umfpack.initialize(mass_matrix_fg);  // inverse immersed mass
-  //     matrix
-  //   }
-  //   invM = linear_operator(mass_matrix_fg, M_inv_umfpack);
-  //   invW = invM * invM;
-  // }
-
-  // // Define augmented blocks. Notice that A22_aug is actually A_omega2 +
-  // // gamma_AL_background * Id
-  // auto A11_aug = A_omega1 + parameters.gamma_AL_background * Ct * invW * C;
-  // auto A22_aug = A_omega2 + parameters.gamma_AL_immersed * M * invW * M;
-  // auto A12_aug = -parameters.gamma_AL_background * Ct * invW * M;
-  // // Next one is just transpose_operator(A12_aug);
-  // auto A21_aug = -parameters.gamma_AL_immersed * M * invW * C;
-
-  // // Augmented (equivalent) system to be solved
-  // auto system_operator = block_operator<3, 3, BlockVector<double>>(
-  //     {{{{A11_aug, A12_aug, Ct}},
-  //       {{A21_aug, A22_aug, -1. * M}},
-  //       {{C, -1. * M, NullCouplin}}}});  // augmented the 2x2 top left block!
-
-  // // Initialize AMG preconditioners for inner solves
+  // Initialize AMG preconditioners for inner solves
   // TrilinosWrappers::PreconditionAMG amg_prec_A11;
   // build_AMG_augmented_block_scalar(
   //     dof_handler_bg, coupling_matrix, stiffness_matrix_bg,
   //     inverse_diag_mass_squared, coupling_sparsity, constraints_bg,
   //     parameters.gamma_AL_background, parameters.beta_1, amg_prec_A11);
 
-  // // Initialize AMG prec for the A_2 augmented block
-  // TrilinosWrappers::PreconditionAMG amg_prec_A22;
-  // // immersed matrix (beta_2 - beta) (grad u,grad v) + gamma*Id
-  // stiffness_matrix_fg_plus_id.copy_from(stiffness_matrix_fg);
-  // // Add gamma*Id to A_2
-  // for (unsigned int i = 0; i < stiffness_matrix_fg_plus_id.m(); ++i)
-  //   stiffness_matrix_fg_plus_id.add(i, i, parameters.gamma_AL_immersed);
-  // amg_prec_A22.initialize(stiffness_matrix_fg_plus_id);
-  // std::cout << "Initialized AMG for A_2" << std::endl;
+  // Initialize AMG prec for the A_2 augmented block
+  TrilinosWrappers::PreconditionAMG amg_prec_A22;
+  // immersed matrix (beta_2 - beta) (grad u,grad v) + gamma*Id
+  stiffness_matrix_fg_plus_id.copy_from(stiffness_matrix_fg);
+  // Add gamma*Id to A_2
+  for (unsigned int i = 0; i < stiffness_matrix_fg_plus_id.m(); ++i)
+    stiffness_matrix_fg_plus_id.add(i, i, parameters.gamma_AL_immersed);
+  amg_prec_A22.initialize(stiffness_matrix_fg_plus_id);
+  std::cout << "Initialized AMG for A_2" << std::endl;
 
-  // if (parameters.export_matrices_for_eig_analysis) {
-  //   std::cout << "Exporting matrices to .csv for eigenvalues analysis...";
-  //   export_to_matlab_csv(stiffness_matrix_bg, "A_DLFDM.csv");
-  //   export_to_matlab_csv(stiffness_matrix_fg, "A_2_DLFDM.csv");
-  //   export_to_matlab_csv(coupling_matrix, "Ct_DLFDM.csv");
-  //   export_to_matlab_csv(mass_matrix_fg, "M_DLFDM.csv");
-  //   std::cout << "Done." << std::endl;
-  // }
+  if (parameters.export_matrices_for_eig_analysis) {
+    std::cout << "Exporting matrices to .csv for eigenvalues analysis...";
+    export_to_matlab_csv(stiffness_matrix_bg, "A_DLFDM.csv");
+    export_to_matlab_csv(stiffness_matrix_fg, "A_2_DLFDM.csv");
+    export_to_matlab_csv(coupling_matrix, "Ct_DLFDM.csv");
+    export_to_matlab_csv(mass_matrix_fg, "M_DLFDM.csv");
+    std::cout << "Done." << std::endl;
+  }
 
-  // typename SolverFGMRES<BlockVector<Number>>::AdditionalData data_fgmres;
-  // data_fgmres.max_basis_size = 50;
-  // SolverFGMRES<BlockVector<Number>> solver_fgmres(
-  //     parameters.outer_solver_control, data_fgmres);
+  typename SolverFGMRES<BlockVector<Number>>::AdditionalData data_fgmres;
+  data_fgmres.max_basis_size = 50;
+  SolverFGMRES<BlockVector<Number>> solver_fgmres(
+      parameters.outer_solver_control, data_fgmres);
 
-  // // Wrap the actual FGMRES solve in another scope in order to discard
-  // // setup-cost.
-  // {
-  //   TimerOutput::Scope t(computing_timer, "Solve system");
-  //   if (parameters.use_modified_AL_preconditioner) {
-  //     // If we use the modified AL preconditioner, we check if we use a small
-  //     // value of gamma.
-  //     AssertThrow(
-  //         parameters.gamma_AL_immersed <= 20.,
-  //         ExcMessage(
-  //             "gamma_AL_immersed is too large for modified
-  //             ALpreconditioner."));
+  // Wrap the actual FGMRES solve in another scope in order to discard
+  // setup-cost.
+  {
+    TimerOutput::Scope t(computing_timer, "Solve system");
 
-  //     // We wither use a fixed number of iterations inside the inner
-  //     solver... if (parameters.use_fixed_iterations)
-  //       solver_lagrangian_scalar =
-  //       std::make_unique<SolverCG<Vector<double>>>(
-  //           parameters.iteration_number_control);
-  //     else  //... or we iterate as usual.
-  //       solver_lagrangian_scalar =
-  //       std::make_unique<SolverCG<Vector<double>>>(
-  //           parameters.inner_solver_control);
+    // If we use the modified AL preconditioner, we check if we use a small
+    // value of gamma.
+    AssertThrow(
+        parameters.gamma_AL_immersed <= 20.,
+        ExcMessage(
+            "gamma_AL_immersed is too large for modified ALpreconditioner."));
 
-  //     // Define block preconditioner using AL approach
-  //     auto A11_aug_inv =
-  //         inverse_operator(A11_aug, *solver_lagrangian_scalar, amg_prec_A11);
-  //     auto A22_aug_inv =
-  //         inverse_operator(A22_aug, *solver_lagrangian_scalar, amg_prec_A22);
+    // We wither use a fixed number of iterations inside the inner solver...
+    if (parameters.use_fixed_iterations)
+      solver_lagrangian_scalar = std::make_unique<SolverCG<Vector<double>>>(
+          parameters.iteration_number_control);
+    else  //... or we iterate as usual.
+      solver_lagrangian_scalar = std::make_unique<SolverCG<Vector<double>>>(
+          parameters.inner_solver_control);
 
-  //     EllipticInterfacePreconditioners::BlockTriangularALPreconditionerModified
-  //         preconditioner_AL(C, M, invW, parameters.gamma_AL_background,
-  //                           A11_aug_inv, A22_aug_inv);
+    // Define block preconditioner using AL approach
+    // auto A11_aug_inv =
+    //     inverse_operator(A11_aug, *solver_lagrangian_scalar, amg_prec_A11);
+    //     TODO: adapt to stokes case
+    PreconditionIdentity prec_id;
+    auto A11_aug_inv = inverse_operator(A11_aug, *solver_lagrangian_scalar);
+    auto A22_aug_inv =
+        inverse_operator(A22_aug, *solver_lagrangian_scalar, amg_prec_A22);
 
-  //     system_rhs_block.block(2) = 0;  // last row of the rhs is 0
+    StokesDLMALPreconditioner preconditioner_AL(
+        A11_aug_inv, A22_aug_inv, Bt, Ct, invW, invMp, M,
+        parameters.gamma_AL_background, parameters.gamma_AL_immersed,
+        parameters.gamma_AL_background);
 
-  //     solver_fgmres.solve(system_operator, system_solution_block,
-  //                         system_rhs_block, preconditioner_AL);
+    // system_rhs_block.block(2) = 0;  // last row of the rhs is 0
 
-  //     std::cout << "Norm of solution: "
-  //               << system_solution_block.block(0).l2_norm() << std::endl;
+    solver_fgmres.solve(system_operator, system_solution_block,
+                        system_rhs_block, preconditioner_AL);
+
+    // std::cout << "Norm of solution: "
+    //           << system_solution_block.block(0).l2_norm() << std::endl;
+  }
   //   } else {
-  //     // Check that gamma is not too small. We force also gamma2 to be equal
-  //     to
+  //     // Check that gamma is not too small. We force also gamma2 to be
+  //     equal to
   //     // gamma.
   //     AssertThrow(
   //         parameters.gamma_AL_background > 1.,
-  //         ExcMessage("Parameter gamma is probably too small for classical AL
+  //         ExcMessage("Parameter gamma is probably too small for classical
+  //         AL
   //         "
   //                    "preconditioner."));
   //     parameters.gamma_AL_immersed = parameters.gamma_AL_background;
 
   //     std::cout << "\t ************************************** WARNING "
   //                  "************************************** \n"
-  //                  "\t USING IDEAL AL PRECONDITIONER. SHOULD BE USED ONLY FOR
-  //                  " "TESTING PURPOSES.\n"
+  //                  "\t USING IDEAL AL PRECONDITIONER. SHOULD BE USED ONLY
+  //                  FOR " "TESTING PURPOSES.\n"
   //               << "\t ***********************************************"
   //                  "************************************** "
   //               << std::endl;
@@ -1109,9 +1107,11 @@ unsigned int StokesDLM<dim>::solve() {
   // convergence_table.add_value("cells", tria_bg.n_active_cells());
   // convergence_table.add_value("DoF background", dof_handler_bg.n_dofs());
   // convergence_table.add_value("DoF immersed", dof_handler_fg.n_dofs());
-  // convergence_table.add_value("gamma (AL)", parameters.gamma_AL_background);
-  // if (parameters.use_modified_AL_preconditioner)
-  //   convergence_table.add_value("gamma2 (AL)", parameters.gamma_AL_immersed);
+  // convergence_table.add_value("gamma (AL)",
+  // parameters.gamma_AL_background); if
+  // (parameters.use_modified_AL_preconditioner)
+  //   convergence_table.add_value("gamma2 (AL)",
+  //   parameters.gamma_AL_immersed);
   // convergence_table.add_value("Outer iterations", n_outer_iterations);
 
   // std::cout << "Solved in " << n_outer_iterations << " iterations"
@@ -1160,7 +1160,7 @@ unsigned int StokesDLM<dim>::solve() {
   //   }
   // }
 
-  // return n_outer_iterations;
+  return n_outer_iterations;
 }
 
 template <int dim>
@@ -1175,7 +1175,8 @@ void StokesDLM<dim>::output_results(const unsigned int ref_cycle) const {
     // data_out_fg.add_data_vector(system_solution_block.block(2), "lambda");
     // data_out_fg.build_patches();
     // std::ofstream output_fg(parameters.output_directory + "/" +
-    //                         "solution-immersed-" + std::to_string(ref_cycle)
+    //                         "solution-immersed-" +
+    //                         std::to_string(ref_cycle)
     //                         +
     //                         ".vtu");
     // data_out_fg.write_vtu(output_fg);
@@ -1200,9 +1201,8 @@ void StokesDLM<dim>::output_results(const unsigned int ref_cycle) const {
 
       BlockVector<double> solution_stokes;
       solution_stokes.reinit(dofs_per_block);
-      solution_stokes.block(0)=system_solution_block.block(0);
-      solution_stokes.block(1)=system_solution_block.block(3);
-
+      solution_stokes.block(0) = system_solution_block.block(0);
+      solution_stokes.block(1) = system_solution_block.block(3);
 
       std::vector<std::string> solution_names(dim, "velocity");
       solution_names.emplace_back("pressure");
@@ -1247,7 +1247,8 @@ void StokesDLM<dim>::run() {
   //   for (const double gamma : gamma_values) {
   //     parameters.gamma_AL_background = gamma;
   //     parameters.gamma_AL_immersed = gamma;
-  //     std::cout << "gamma_AL_background= " << parameters.gamma_AL_background
+  //     std::cout << "gamma_AL_background= " <<
+  //     parameters.gamma_AL_background
   //               << std::endl;
   //     unsigned int iters = solve();
   //     outer_iterations.push_back(iters);
@@ -1255,8 +1256,8 @@ void StokesDLM<dim>::run() {
   //   }
   //   // Find the minimum index
   //   const unsigned int min_index =
-  //       std::min_element(outer_iterations.begin(), outer_iterations.end()) -
-  //       outer_iterations.begin();
+  //       std::min_element(outer_iterations.begin(), outer_iterations.end())
+  //       - outer_iterations.begin();
 
   //   parameters.gamma_AL_background = gamma_values[min_index];
   //   parameters.gamma_AL_immersed = parameters.gamma_AL_background;
@@ -1269,7 +1270,8 @@ void StokesDLM<dim>::run() {
   //   std::cout << "START CONVERGENCE STUDY WITH GAMMA: "
   //             << parameters.gamma_AL_background << std::endl;
 
-  //   // If we have determined the optimal gamma value, we can proceed with the
+  //   // If we have determined the optimal gamma value, we can proceed with
+  //   the
   //   // refinement cycles using such a value of gamma.
   // }
 

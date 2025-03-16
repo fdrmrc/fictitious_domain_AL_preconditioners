@@ -1,6 +1,7 @@
 #ifndef augmented_lagrangian_prec_h
 #define augmented_lagrangian_prec_h
 
+#include <deal.II/base/tensor.h>
 #include <deal.II/lac/block_vector.h>
 #include <deal.II/lac/linear_operator.h>
 #include <deal.II/lac/linear_operator_tools.h>
@@ -75,6 +76,60 @@ class BlockPreconditionerAugmentedLagrangianStokes {
   LinearOperator<Vector<double>> Mp_inv;
   LinearOperator<Vector<double>> Ct;
   double gamma;
+  double gamma_grad_div;
+};
+
+class StokesDLMALPreconditioner {
+ public:
+  StokesDLMALPreconditioner(const LinearOperator<Vector<double>> A11_inv_,
+                            const LinearOperator<Vector<double>> A22_inv_,
+                            const LinearOperator<Vector<double>> Bt_,
+                            const LinearOperator<Vector<double>> Ct_,
+                            const LinearOperator<Vector<double>> invW_,
+                            const LinearOperator<Vector<double>> Mp_inv_,
+                            const LinearOperator<Vector<double>> M_,
+                            const double gamma_fluid_,
+                            const double gamma_solid_,
+                            const double gamma_grad_div_) {
+    // Aug_inv = Aug_inv_;
+    A11_inv = A11_inv_;
+    A22_inv = A22_inv_;
+    Bt = Bt_;
+    Ct = Ct_;
+    C = transpose_operator(Ct);
+    invW = invW_;
+    Mp_inv = Mp_inv_;
+    M = M_;  // immersed
+    gamma_fluid = gamma_fluid_;
+    gamma_solid = gamma_solid_;
+    gamma_grad_div = gamma_grad_div_;
+  }
+
+  void vmult(BlockVector<double> &v, const BlockVector<double> &u) const {
+    v.block(0) = 0.;
+    v.block(1) = 0.;
+    v.block(2) = 0.;
+    v.block(3) = 0.;
+
+    v.block(3) = -gamma_grad_div * Mp_inv * u.block(3);
+    v.block(2) = -gamma_fluid * invW * u.block(2);
+    v.block(1) = A22_inv * (u.block(1) + M * v.block(2));
+    v.block(0) =
+        A11_inv * (u.block(0) + gamma_fluid * Ct * invW * M * v.block(1) -
+                   Ct * v.block(2) - Bt * v.block(3));
+  }
+
+  // LinearOperator<Vector<double>> Aug_inv;
+  LinearOperator<Vector<double>> A11_inv;
+  LinearOperator<Vector<double>> A22_inv;
+  LinearOperator<Vector<double>> C;
+  LinearOperator<Vector<double>> Ct;
+  LinearOperator<Vector<double>> Bt;
+  LinearOperator<Vector<double>> invW;
+  LinearOperator<Vector<double>> Mp_inv;
+  LinearOperator<Vector<double>> M;
+  double gamma_fluid;
+  double gamma_solid;
   double gamma_grad_div;
 };
 
