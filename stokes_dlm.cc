@@ -817,20 +817,23 @@ void StokesDLM<dim>::assemble_stokes() {
       for (unsigned int i = 0; i < dofs_per_cell; ++i) {
         for (unsigned int j = 0; j <= i; ++j) {
           // if (augmented_lagrangian_control.grad_div_stabilization == true) {
-          //   local_matrix(i, j) +=
-          //       (1. * scalar_product(grad_phi_u[i],
-          //                            grad_phi_u[j])  // symgrad-symgrad
-          //        - div_phi_u[i] * phi_p[j]           // div u_i p_j
-          //        - phi_p[i] * div_phi_u[j]           // p_i div u_j) *
-          //       fe_values.JxW(q);
+          local_matrix(i, j) +=
+              (1. * scalar_product(grad_phi_u[i],
+                                   grad_phi_u[j])  // symgrad-symgrad
+               - div_phi_u[i] * phi_p[j]           // div u_i p_j
+               - phi_p[i] * div_phi_u[j] +         // p_i div u_j)
+               parameters.gamma_AL_background * div_phi_u[i] * div_phi_u[j]) *
+              fe_values.JxW(q);
           //   // TODO: grad-div stabilization?
           // } else {
           // no grad-div stabilization, usual formulation
-          local_matrix(i, j) +=
-              (2 * (symgrad_phi_u[i] * symgrad_phi_u[j])  // symgrad-symgrad
-               - div_phi_u[i] * phi_p[j]                  // div u_i p_j
-               - phi_p[i] * div_phi_u[j]) *               // p_i div u_j
-              fe_values.JxW(q);
+          // local_matrix(i, j) +=
+          //     (2 * (symgrad_phi_u[i] * symgrad_phi_u[j])  // symgrad-symgrad
+          //      - div_phi_u[i] * phi_p[j]                  // div u_i p_j
+          //      - phi_p[i] * div_phi_u[j] +
+          //      +parameters.gamma_AL_background * div_phi_u[i] *
+          //          div_phi_u[j]) *  // p_i div u_j
+          //     fe_values.JxW(q);
           // }
 
           local_preconditioner_matrix(i, j) +=
@@ -967,8 +970,9 @@ unsigned int StokesDLM<dim>::solve() {
 
   // Define augmented blocks. Notice that A22_aug is actually A_omega2 +
   // gamma_AL_background * Id
-  auto A11_aug = A + parameters.gamma_AL_background * Ct * invW * C +
-                 parameters.gamma_AL_background * Bt * invMp * B;
+  // auto A11_aug = A + parameters.gamma_AL_background * Ct * invW * C +
+  //                parameters.gamma_AL_background * Bt * invMp * B;
+  auto A11_aug = A + parameters.gamma_AL_background * Ct * invW * C;
   auto A22_aug = A_omega2 + parameters.gamma_AL_immersed * M * invW * M;
   auto A12_aug = -parameters.gamma_AL_background * Ct * invW * M;
   // Next one is just transpose_operator(A12_aug);
@@ -982,7 +986,18 @@ unsigned int StokesDLM<dim>::solve() {
         {{B, NullS, NullS, NullS}}}});
 
   // Initialize AMG preconditioners for inner solves
-  // TrilinosWrappers::PreconditionAMG amg_prec_A11;
+  TrilinosWrappers::PreconditionAMG amg_prec_A11;
+  Vector<double> inverse_squares_multiplier(mass_matrix_fg.m());  // M^{-2}
+  for (types::global_dof_index i = 0; i < mass_matrix_fg.m(); ++i)
+    inverse_squares_multiplier(i) =
+        1. / (mass_matrix_fg.diag_element(i) * mass_matrix_fg.diag_element(i));
+
+  build_AMG_augmented_block(velocity_dh, stokes_dh, coupling_matrix,
+                            stokes_matrix.block(0, 0), coupling_sparsity,
+                            inverse_squares_multiplier, constraints_stokes,
+                            parameters.gamma_AL_background, amg_prec_A11);
+  // prec_amg_aug.initialize(stokes_matrix.block(0, 0));
+
   // build_AMG_augmented_block_scalar(
   //     dof_handler_bg, coupling_matrix, stiffness_matrix_bg,
   //     inverse_diag_mass_squared, coupling_sparsity, constraints_bg,
@@ -1033,11 +1048,10 @@ unsigned int StokesDLM<dim>::solve() {
           parameters.inner_solver_control);
 
     // Define block preconditioner using AL approach
-    // auto A11_aug_inv =
-    //     inverse_operator(A11_aug, *solver_lagrangian_scalar, amg_prec_A11);
-    //     TODO: adapt to stokes case
-    PreconditionIdentity prec_id;
-    auto A11_aug_inv = inverse_operator(A11_aug, *solver_lagrangian_scalar);
+    auto A11_aug_inv =
+        inverse_operator(A11_aug, *solver_lagrangian_scalar, amg_prec_A11);
+    // PreconditionIdentity prec_id;
+    // auto A11_aug_inv = inverse_operator(A11_aug, *solver_lagrangian_scalar);
     auto A22_aug_inv =
         inverse_operator(A22_aug, *solver_lagrangian_scalar, amg_prec_A22);
 
