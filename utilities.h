@@ -304,7 +304,7 @@ void build_AMG_augmented_block(
   // amg_data.elliptic = true;
   amg_data.higher_order_elements = true;
   amg_data.smoother_sweeps = 2;
-  amg_data.output_details = 10;  // Maximum verbosity
+  // amg_data.output_details = 10;  // Maximum verbosity
   amg_data.aggregation_threshold = 0.02;
 
   std::cout << "Before initializing AMG" << std::endl;
