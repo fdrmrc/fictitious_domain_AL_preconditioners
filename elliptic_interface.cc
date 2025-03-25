@@ -749,6 +749,35 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
     export_to_matlab_csv(coupling_matrix, "Ct_DLFDM.csv");
     export_to_matlab_csv(mass_matrix_fg, "M_DLFDM.csv");
     std::cout << "Done." << std::endl;
+
+    // Compute scaling of ||Cx1 - Mx_2||_2
+
+    // Helper function taken from deal.II test suite to get uniformly
+    // distributed random value between min and max
+    auto random_value = [](const double &min = static_cast<double>(0),
+                           const double &max = static_cast<double>(1)) {
+      return min + (max - min) * (static_cast<double>(std::rand()) /
+                                  static_cast<double>(RAND_MAX));
+    };
+
+    Vector<double> x_1(dof_handler_bg.n_dofs());
+    for (unsigned int i = 0; i < dof_handler_bg.n_dofs(); ++i)
+      x_1[i] = random_value();
+    Vector<double> x_2(dof_handler_fg.n_dofs());
+    for (unsigned int i = 0; i < dof_handler_fg.n_dofs(); ++i)
+      x_2[i] = random_value();
+
+    // normalize
+    x_1 /= x_1.l2_norm();
+    x_2 /= x_2.l2_norm();
+
+    Vector<double> result(dof_handler_fg.n_dofs());
+    coupling_matrix.Tvmult(result, x_1);  // Cx_1
+    x_2 *= -1.;
+    mass_matrix_fg.vmult_add(result, x_2);  // Cx_1 - Mx_2
+    double norm = result.l2_norm();
+    std::cout << "h_immersed = " << GridTools::maximal_cell_diameter(tria_fg)
+              << ", norm of ||Cx1 - Mx_2||_2 = " << norm << std::endl;
   }
 
   typename SolverFGMRES<BlockVector<Number>>::AdditionalData data_fgmres;
