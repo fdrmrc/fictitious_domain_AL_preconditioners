@@ -1,8 +1,10 @@
+#include <deal.II/base/conditional_ostream.h>
 #include <deal.II/base/convergence_table.h>
 #include <deal.II/base/exceptions.h>
 #include <deal.II/base/function.h>
 #include <deal.II/base/logstream.h>
 #include <deal.II/base/mpi.h>
+#include <deal.II/base/mpi_tags.h>
 #include <deal.II/base/numbers.h>
 #include <deal.II/base/parameter_acceptor.h>
 #include <deal.II/base/parameter_handler.h>
@@ -24,6 +26,7 @@
 #include <deal.II/lac/block_linear_operator.h>
 #include <deal.II/lac/block_vector.h>
 #include <deal.II/lac/diagonal_matrix.h>
+#include <deal.II/lac/generic_linear_algebra.h>
 #include <deal.II/lac/linear_operator.h>
 #include <deal.II/lac/linear_operator_tools.h>
 #include <deal.II/lac/precondition.h>
@@ -33,11 +36,13 @@
 #include <deal.II/lac/sparse_direct.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/trilinos_precondition.h>
+#include <deal.II/lac/trilinos_vector.h>
 #include <deal.II/lac/vector.h>
 #include <deal.II/non_matching/coupling.h>
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/numerics/vector_tools_common.h>
+#include <mpi.h>
 
 #include <cmath>
 #include <exception>
@@ -321,25 +326,26 @@ class EllipticInterfaceDLM {
  public:
   typedef double Number;
 
-  EllipticInterfaceDLM(const ProblemParameters<dim> &prm);
+  EllipticInterfaceDLM(const ProblemParameters<dim> &prm, const MPI_Comm comm);
 
   void generate_grids();
 
   void system_setup();
 
-  void setup_stiffness_matrix(const DoFHandler<dim> &dof_handler,
-                              AffineConstraints<double> &constraints,
-                              SparsityPattern &stiffness_sparsity,
-                              SparseMatrix<Number> &stiffness_matrix) const;
+  void setup_stiffness_matrix(
+      const DoFHandler<dim> &dof_handler,
+      AffineConstraints<double> &constraints,
+      const IndexSet &locally_owned_dofs, const IndexSet &locally_relevant_dofs,
+      TrilinosWrappers::SparseMatrix &stiffness_matrix) const;
 
   void setup_coupling();
 
   void assemble_subsystem(const FiniteElement<dim> &fe,
                           const DoFHandler<dim> &dof_handler,
                           const AffineConstraints<double> &constraints,
-                          SparseMatrix<Number> &system_matrix,
-                          Vector<Number> &system_rhs, double rho, double mu,
-                          const Function<dim> &rhs_function) const;
+                          TrilinosWrappers::SparseMatrix &system_matrix,
+                          TrilinosWrappers::MPI::Vector &system_rhs, double rho,
+                          double mu, const Function<dim> &rhs_function) const;
 
   void assemble();
 
@@ -352,52 +358,70 @@ class EllipticInterfaceDLM {
 
  private:
   const ProblemParameters<dim> &parameters;
-  Triangulation<dim> tria_bg;
-  Triangulation<dim> tria_fg;
 
   MappingQ1<dim> mapping;
-
-  DoFHandler<dim> dof_handler_bg;
-  DoFHandler<dim> dof_handler_fg;
-  FE_Q<dim> fe_bg;
-  FE_Q<dim> fe_fg;
 
   AffineConstraints<double> constraints_bg;
   AffineConstraints<double> constraints_fg;
 
-  SparsityPattern stiffness_sparsity_fg;
-  SparsityPattern stiffness_sparsity_bg;
-  SparsityPattern coupling_sparsity;
-  SparsityPattern mass_sparsity_fg;
+  // locally owned dofs
+  IndexSet locally_owned_dofs_bg;
+  IndexSet locally_owned_dofs_fg;
 
-  SparseMatrix<Number> stiffness_matrix_bg;
-  SparseMatrix<Number> stiffness_matrix_fg;
-  SparseMatrix<Number>
+  // locally relevant dofs
+  IndexSet locally_relevant_dofs_bg;
+  IndexSet locally_relevant_dofs_fg;
+
+  TrilinosWrappers::SparseMatrix stiffness_matrix_bg;
+  TrilinosWrappers::SparseMatrix stiffness_matrix_fg;
+  TrilinosWrappers::SparseMatrix
       stiffness_matrix_fg_plus_id;  // A_2 + gammaId, needed for modifiedAL
-  SparseMatrix<Number> coupling_matrix;
+  TrilinosWrappers::SparseMatrix coupling_matrix;
+  TrilinosWrappers::SparseMatrix coupling_matrix_transpose;
 
-  SparseMatrix<Number> mass_matrix_fg;
+  TrilinosWrappers::SparseMatrix mass_matrix_fg;
 
-  BlockVector<Number> system_rhs_block;
-  BlockVector<Number> system_solution_block;
+  TrilinosWrappers::MPI::BlockVector system_rhs_block;
+  TrilinosWrappers::MPI::BlockVector system_solution_block;
 
-  mutable TimerOutput computing_timer;
+  MPI_Comm comm;
+
+  parallel::distributed::Triangulation<dim> tria_bg;  // fluid, distributed
+  parallel::shared::Triangulation<dim> tria_fg;       // solid, shared
+
+  DoFHandler<dim> dof_handler_bg;
+  DoFHandler<dim> dof_handler_fg;
+
+  FE_Q<dim> fe_bg;
+  FE_Q<dim> fe_fg;
 
   mutable ConvergenceTable convergence_table;
 
-  std::unique_ptr<SolverCG<Vector<double>>> solver_lagrangian_scalar;
+  std::unique_ptr<SolverCG<TrilinosWrappers::MPI::Vector>>
+      solver_lagrangian_scalar;
+
+  ConditionalOStream pcout;
+
+  mutable TimerOutput computing_timer;
+
+  TrilinosWrappers::PreconditionILU M_inv_ilu;
+
+  std::unique_ptr<GridTools::Cache<dim>> space_grid_tools_cache;
 };
 
 template <int dim>
 EllipticInterfaceDLM<dim>::EllipticInterfaceDLM(
-    const ProblemParameters<dim> &prm)
+    const ProblemParameters<dim> &prm, const MPI_Comm communicator)
     : parameters(prm),
+      comm(communicator),
+      tria_bg(comm),
+      tria_fg(comm),
       dof_handler_bg(tria_bg),
       dof_handler_fg(tria_fg),
       fe_bg(parameters.background_space_finite_element_degree),
       fe_fg(parameters.immersed_space_finite_element_degree),
-      computing_timer(MPI_COMM_WORLD, std::cout,
-                      TimerOutput::every_call_and_summary,
+      pcout(std::cout, Utilities::MPI::this_mpi_process(comm) == 0),
+      computing_timer(comm, pcout, TimerOutput::every_call_and_summary,
                       TimerOutput::wall_times) {
   // First, do some sanity checks on the parameters.
   AssertThrow(parameters.beta_1 > 0., ExcMessage("Beta_1 must be positive."));
@@ -485,9 +509,9 @@ void EllipticInterfaceDLM<dim>::generate_grids() {
   const double h_background = GridTools::maximal_cell_diameter(tria_bg);
   const double h_immersed = GridTools::maximal_cell_diameter(tria_fg);
   const double ratio = h_background / h_immersed;
-  std::cout << "h background = " << h_background << "\n"
-            << "h immersed = " << h_immersed << "\n"
-            << "grids ratio (background/immersed) = " << ratio << std::endl;
+  pcout << "h background = " << h_background << "\n"
+        << "h immersed = " << h_immersed << "\n"
+        << "grids ratio (background/immersed) = " << ratio << std::endl;
 
   AssertThrow(ratio < 2.2 && ratio > 0.4,
               ExcMessage("Check mesh sizes of the two grids."));
@@ -509,8 +533,20 @@ void EllipticInterfaceDLM<dim>::system_setup() {
   dof_handler_bg.distribute_dofs(fe_bg);
   dof_handler_fg.distribute_dofs(fe_fg);
 
+  // Retrieve locally owned and relevant DoFs
+  locally_owned_dofs_bg = dof_handler_bg.locally_owned_dofs();
+  locally_relevant_dofs_bg =
+      DoFTools::extract_locally_relevant_dofs(dof_handler_bg);
+
+  locally_owned_dofs_fg = dof_handler_fg.locally_owned_dofs();
+  locally_relevant_dofs_fg =
+      DoFTools::extract_locally_relevant_dofs(dof_handler_fg);
+
   constraints_bg.clear();
   constraints_fg.clear();
+
+  constraints_bg.reinit(locally_owned_dofs_bg, locally_relevant_dofs_bg);
+  constraints_fg.reinit(locally_owned_dofs_fg, locally_relevant_dofs_fg);
 
   if (parameters.do_convergence_study)
     VectorTools::interpolate_boundary_values(
@@ -523,41 +559,43 @@ void EllipticInterfaceDLM<dim>::system_setup() {
   constraints_bg.close();
   constraints_fg.close();
 
-  setup_stiffness_matrix(dof_handler_bg, constraints_bg, stiffness_sparsity_bg,
-                         stiffness_matrix_bg);
+  setup_stiffness_matrix(dof_handler_bg, constraints_bg, locally_owned_dofs_bg,
+                         locally_relevant_dofs_bg, stiffness_matrix_bg);
 
-  setup_stiffness_matrix(dof_handler_fg, constraints_fg, stiffness_sparsity_fg,
-                         stiffness_matrix_fg);
+  setup_stiffness_matrix(dof_handler_fg, constraints_fg, locally_owned_dofs_fg,
+                         locally_relevant_dofs_fg, stiffness_matrix_fg);
 
-  setup_stiffness_matrix(dof_handler_fg, constraints_fg, stiffness_sparsity_fg,
-                         stiffness_matrix_fg_plus_id);
+  setup_stiffness_matrix(dof_handler_fg, constraints_fg, locally_owned_dofs_fg,
+                         locally_relevant_dofs_fg, stiffness_matrix_fg_plus_id);
 
-  mass_matrix_fg.reinit(stiffness_sparsity_fg);
+  mass_matrix_fg.reinit(stiffness_matrix_fg);  // copy parallel layout
 
-  system_rhs_block.reinit(3);
-  system_rhs_block.block(0).reinit(dof_handler_bg.n_dofs());
-  system_rhs_block.block(1).reinit(dof_handler_fg.n_dofs());
-  system_rhs_block.block(2).reinit(dof_handler_fg.n_dofs());
-
+  // locally owned DoF for each block: (u,u_2,lambda)
+  const std::vector<IndexSet> partitionings{
+      locally_owned_dofs_bg, locally_owned_dofs_fg, locally_owned_dofs_fg};
+  system_rhs_block.reinit(partitionings, comm, false);
   system_solution_block.reinit(system_rhs_block);
 
-  std::cout << "N DoF background: " << dof_handler_bg.n_dofs() << std::endl;
-  std::cout << "N DoF immersed: " << dof_handler_fg.n_dofs() << std::endl;
+  pcout << "N DoF background: " << dof_handler_bg.n_dofs() << std::endl;
+  pcout << "N DoF immersed: " << dof_handler_fg.n_dofs() << std::endl;
 
-  std::cout << "==============================================================="
-               "========================="
-            << std::endl;
+  pcout << "==============================================================="
+           "========================="
+        << std::endl;
 }
 
 template <int dim>
 void EllipticInterfaceDLM<dim>::setup_stiffness_matrix(
     const DoFHandler<dim> &dof_handler, AffineConstraints<double> &constraints,
-    SparsityPattern &stiffness_sparsity,
-    SparseMatrix<Number> &stiffness_matrix) const {
-  DynamicSparsityPattern dsp(dof_handler.n_dofs(), dof_handler.n_dofs());
-  DoFTools::make_sparsity_pattern(dof_handler, dsp, constraints);
-  stiffness_sparsity.copy_from(dsp);
-  stiffness_matrix.reinit(stiffness_sparsity);
+    const IndexSet &locally_owned_dofs, const IndexSet &locally_relevant_dofs,
+    TrilinosWrappers::SparseMatrix &stiffness_matrix) const {
+  DynamicSparsityPattern dsp(locally_relevant_dofs);
+
+  DoFTools::make_sparsity_pattern(dof_handler, dsp, constraints, false);
+  SparsityTools::distribute_sparsity_pattern(dsp, locally_owned_dofs, comm,
+                                             locally_relevant_dofs);
+
+  stiffness_matrix.reinit(locally_owned_dofs, locally_owned_dofs, dsp, comm);
 }
 
 template <int dim>
@@ -567,17 +605,35 @@ void EllipticInterfaceDLM<dim>::setup_coupling() {
   QGauss<dim> quad(fe_bg.degree + 1);
 
   {
-    DynamicSparsityPattern dsp(dof_handler_bg.n_dofs(),
-                               dof_handler_fg.n_dofs());
-    NonMatching::create_coupling_sparsity_pattern(
-        dof_handler_bg, dof_handler_fg, quad, dsp, constraints_bg,
-        ComponentMask(), ComponentMask(), mapping, mapping, constraints_fg);
-    coupling_sparsity.copy_from(dsp);
-    coupling_matrix.reinit(coupling_sparsity);
+    space_grid_tools_cache = std::make_unique<GridTools::Cache<dim>>(tria_bg);
 
-    NonMatching::create_coupling_mass_matrix(
-        dof_handler_bg, dof_handler_fg, quad, coupling_matrix, constraints_bg,
-        ComponentMask(), ComponentMask(), mapping, mapping, constraints_fg);
+    TrilinosWrappers::SparsityPattern dsp(dof_handler_bg.locally_owned_dofs(),
+                                          dof_handler_fg.locally_owned_dofs(),
+                                          comm);
+
+    TrilinosWrappers::SparsityPattern dsp_t(dof_handler_fg.locally_owned_dofs(),
+                                            dof_handler_bg.locally_owned_dofs(),
+                                            comm);
+
+    // Here, we use velocity_dh: we want to couple DoF for velocity with the
+    // ones of the multiplier.
+    UtilitiesAL::create_coupling_sparsity_patterns(
+        *space_grid_tools_cache, dof_handler_bg, dof_handler_fg, quad, dsp_t,
+        dsp, constraints_bg, ComponentMask(), ComponentMask(), mapping,
+        AffineConstraints<double>());
+    dsp.compress();
+    dsp_t.compress();
+    pcout << "Sparsity coupling: done" << std::endl;
+    coupling_matrix.reinit(dsp);
+    coupling_matrix_transpose.reinit(dsp_t);
+
+    // Assemble C and Ct simultaneously
+    UtilitiesAL::create_coupling_mass_matrices(
+        *space_grid_tools_cache, dof_handler_bg, dof_handler_fg, quad,
+        coupling_matrix_transpose, coupling_matrix, constraints_bg,
+        ComponentMask(), ComponentMask(), mapping, AffineConstraints<double>());
+    coupling_matrix.compress(VectorOperation::add);
+    coupling_matrix_transpose.compress(VectorOperation::add);
   }
 }
 
@@ -585,8 +641,9 @@ template <int dim>
 void EllipticInterfaceDLM<dim>::assemble_subsystem(
     const FiniteElement<dim> &fe, const DoFHandler<dim> &dof_handler,
     const AffineConstraints<double> &constraints,
-    SparseMatrix<Number> &system_matrix, Vector<Number> &system_rhs, double rho,
-    double mu, const Function<dim> &rhs_function) const {
+    TrilinosWrappers::SparseMatrix &system_matrix,
+    TrilinosWrappers::MPI::Vector &system_rhs, double rho, double mu,
+    const Function<dim> &rhs_function) const {
   const QGauss<dim> quad(fe.degree + 1);
 
   FEValues<dim> fe_values(fe, quad,
@@ -601,33 +658,36 @@ void EllipticInterfaceDLM<dim>::assemble_subsystem(
   std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
   std::vector<double> rhs_values(quad.size());
 
-  for (const auto &cell : dof_handler.active_cell_iterators()) {
-    cell_matrix = 0;
-    cell_rhs = 0;
+  for (const auto &cell : dof_handler.active_cell_iterators())
+    if (cell->is_locally_owned()) {
+      cell_matrix = 0;
+      cell_rhs = 0;
 
-    fe_values.reinit(cell);
-    rhs_function.value_list(fe_values.get_quadrature_points(), rhs_values);
+      fe_values.reinit(cell);
+      rhs_function.value_list(fe_values.get_quadrature_points(), rhs_values);
 
-    for (const unsigned int q_index : fe_values.quadrature_point_indices()) {
-      for (const unsigned int i : fe_values.dof_indices()) {
-        for (const unsigned int j : fe_values.dof_indices())
-          cell_matrix(i, j) +=
-              (rho * fe_values.shape_value(i, q_index) *  // u
-                   fe_values.shape_value(j, q_index)      // v
-               + mu * fe_values.shape_grad(i, q_index) *  // grad u
-                     fe_values.shape_grad(j, q_index)) *  // grad v
-              fe_values.JxW(q_index);                     // dx
+      for (const unsigned int q_index : fe_values.quadrature_point_indices()) {
+        for (const unsigned int i : fe_values.dof_indices()) {
+          for (const unsigned int j : fe_values.dof_indices())
+            cell_matrix(i, j) +=
+                (rho * fe_values.shape_value(i, q_index) *  // u
+                     fe_values.shape_value(j, q_index)      // v
+                 + mu * fe_values.shape_grad(i, q_index) *  // grad u
+                       fe_values.shape_grad(j, q_index)) *  // grad v
+                fe_values.JxW(q_index);                     // dx
 
-        cell_rhs(i) += (rhs_values[q_index] *                // f(x)
-                        fe_values.shape_value(i, q_index) *  // phi_i(x_q)
-                        fe_values.JxW(q_index));             // dx
+          cell_rhs(i) += (rhs_values[q_index] *                // f(x)
+                          fe_values.shape_value(i, q_index) *  // phi_i(x_q)
+                          fe_values.JxW(q_index));             // dx
+        }
       }
-    }
 
-    cell->get_dof_indices(local_dof_indices);
-    constraints.distribute_local_to_global(
-        cell_matrix, cell_rhs, local_dof_indices, system_matrix, system_rhs);
-  }
+      cell->get_dof_indices(local_dof_indices);
+      constraints.distribute_local_to_global(
+          cell_matrix, cell_rhs, local_dof_indices, system_matrix, system_rhs);
+    }
+  system_matrix.compress(VectorOperation::add);
+  system_rhs.compress(VectorOperation::add);
 }
 
 template <int dim>
@@ -666,7 +726,8 @@ void EllipticInterfaceDLM<dim>::assemble() {
 }
 
 void output_double_number(double input, const std::string &text) {
-  std::cout << text << input << std::endl;
+  if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
+    std::cout << text << input << std::endl;
 }
 
 template <int dim>
@@ -674,40 +735,62 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   // Start with defining the outer iterations to an invalid value.
   unsigned int n_outer_iterations = numbers::invalid_unsigned_int;
 
-  auto A_omega1 = linear_operator(stiffness_matrix_bg);
-  auto A_omega2 = linear_operator(stiffness_matrix_fg);
-  auto M = linear_operator(mass_matrix_fg);
-  auto NullF = null_operator(linear_operator(stiffness_matrix_bg));
-  auto NullS = null_operator(linear_operator(mass_matrix_fg));
-  auto NullCouplin = null_operator(linear_operator(coupling_matrix));
-  auto Ct = linear_operator(coupling_matrix);
-  auto C = transpose_operator(Ct);
+  using PayloadType = dealii::TrilinosWrappers::internal::
+      LinearOperatorImplementation::TrilinosPayload;
+
+  auto A_omega1 = linear_operator<TrilinosWrappers::MPI::Vector,
+                                  TrilinosWrappers::MPI::Vector, PayloadType>(
+      stiffness_matrix_bg);
+  auto A_omega2 = linear_operator<TrilinosWrappers::MPI::Vector,
+                                  TrilinosWrappers::MPI::Vector, PayloadType>(
+      stiffness_matrix_fg);
+  auto M = linear_operator<TrilinosWrappers::MPI::Vector,
+                           TrilinosWrappers::MPI::Vector, PayloadType>(
+      mass_matrix_fg);
+  auto minusM = -1. * M;
+  auto Zero = M * 0.0;
+  auto Ct = linear_operator<TrilinosWrappers::MPI::Vector,
+                            TrilinosWrappers::MPI::Vector, PayloadType>(
+      coupling_matrix);
+  auto C = linear_operator<TrilinosWrappers::MPI::Vector,
+                           TrilinosWrappers::MPI::Vector, PayloadType>(
+      coupling_matrix_transpose);
 
   // We create empty operators for the action of the inverse of W. Depending
   // on the the choice, we either approximate it using the diagonal of the
   // mass matrix (squaring the entries) or we use the direct inversion of the
-  // mass matrix provided by UMFPACK.
+  // mass matrix.
   auto invM = null_operator(M);
   auto invW = null_operator(M);
-  SparseDirectUMFPACK M_inv_umfpack;
-
+  // SparseDirectUMFPACK M_inv_umfpack;
+  SolverControl solver_control(100, 1e-12, false, false);
+  SolverCG<TrilinosWrappers::MPI::Vector> cg_solver(solver_control);
   // Using inverse of diagonal mass matrix (squared)
-  Vector<double> inverse_diag_mass_squared(dof_handler_fg.n_dofs());
-  for (unsigned int i = 0; i < dof_handler_fg.n_dofs(); ++i)
-    inverse_diag_mass_squared[i] =
+  // TODO: check
+  TrilinosWrappers::MPI::Vector inverse_diag_mass_squared(locally_owned_dofs_fg,
+                                                          comm);
+  // for (unsigned int i = 0; i < dof_handler_fg.n_dofs(); ++i)
+  for (const auto i : locally_owned_dofs_fg)
+    inverse_diag_mass_squared(i) =
         1. / (mass_matrix_fg.diag_element(i) * mass_matrix_fg.diag_element(i));
+  inverse_diag_mass_squared.compress(VectorOperation::insert);
 
+  // TODO: parallelize
   DiagonalMatrix<Vector<double>> diag_inverse;
   if (parameters.use_diagonal_inverse == true) {
-    diag_inverse.reinit(inverse_diag_mass_squared);
-    invW = linear_operator(diag_inverse);
+    // TODO: adapt
+    // diag_inverse.reinit(inverse_diag_mass_squared);
+    // invW = linear_operator(diag_inverse);
+    // invM
   } else {
     // Use direct inversion
     {
       TimerOutput::Scope t(computing_timer, "Factorize mass matrix");
-      M_inv_umfpack.initialize(mass_matrix_fg);  // inverse immersed mass matrix
+      // M_inv_umfpack.initialize(mass_matrix_fg);  // inverse immersed mass
+      // matrix
+      M_inv_ilu.initialize(mass_matrix_fg);
     }
-    invM = linear_operator(mass_matrix_fg, M_inv_umfpack);
+    invM = inverse_operator(M, cg_solver, M_inv_ilu);
     invW = invM * invM;
   }
 
@@ -716,73 +799,46 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   auto A11_aug = A_omega1 + parameters.gamma_AL_background * Ct * invW * C;
   auto A22_aug = A_omega2 + parameters.gamma_AL_immersed * M * invW * M;
   auto A12_aug = -parameters.gamma_AL_background * Ct * invW * M;
-  // Next one is just transpose_operator(A12_aug);
   auto A21_aug = -parameters.gamma_AL_immersed * M * invW * C;
 
   // Augmented (equivalent) system to be solved
-  auto system_operator = block_operator<3, 3, BlockVector<double>>(
-      {{{{A11_aug, A12_aug, Ct}},
-        {{A21_aug, A22_aug, -1. * M}},
-        {{C, -1. * M, NullCouplin}}}});  // augmented the 2x2 top left block!
+  auto system_operator =
+      block_operator<3, 3, TrilinosWrappers::MPI::BlockVector>(
+          {{{{A11_aug, A12_aug, Ct}},
+            {{A21_aug, A22_aug, minusM}},
+            {{C, minusM, Zero}}}});  // augmented the 2x2 top left block!
 
   // Initialize AMG preconditioners for inner solves
+  TrilinosWrappers::SparseMatrix augmented_matrix;
+  UtilitiesAL::create_augmented_block_in_parallel(
+      stiffness_matrix_bg, coupling_matrix_transpose, coupling_matrix,
+      inverse_diag_mass_squared, parameters.gamma_AL_background,
+      augmented_matrix);
+
   TrilinosWrappers::PreconditionAMG amg_prec_A11;
-  build_AMG_augmented_block_scalar(
-      dof_handler_bg, coupling_matrix, stiffness_matrix_bg,
-      inverse_diag_mass_squared, coupling_sparsity, constraints_bg,
-      parameters.gamma_AL_background, parameters.beta_1, amg_prec_A11);
+  amg_prec_A11.initialize(augmented_matrix);
+  pcout << "Initialized AMG for A_1" << std::endl;
 
   // Initialize AMG prec for the A_2 augmented block
   TrilinosWrappers::PreconditionAMG amg_prec_A22;
   // immersed matrix (beta_2 - beta) (grad u,grad v) + gamma*Id
   stiffness_matrix_fg_plus_id.copy_from(stiffness_matrix_fg);
-  // Add gamma*Id to A_2
-  for (unsigned int i = 0; i < stiffness_matrix_fg_plus_id.m(); ++i)
-    stiffness_matrix_fg_plus_id.add(i, i, parameters.gamma_AL_immersed);
+  for (const types::global_dof_index idx : locally_owned_dofs_fg)
+    stiffness_matrix_fg_plus_id.add(idx, idx, parameters.gamma_AL_immersed);
   amg_prec_A22.initialize(stiffness_matrix_fg_plus_id);
-  std::cout << "Initialized AMG for A_2" << std::endl;
+  pcout << "Initialized AMG for A_2" << std::endl;
 
   if (parameters.export_matrices_for_eig_analysis) {
-    std::cout << "Exporting matrices to .csv for eigenvalues analysis...";
-    export_to_matlab_csv(stiffness_matrix_bg, "A_DLFDM.csv");
-    export_to_matlab_csv(stiffness_matrix_fg, "A_2_DLFDM.csv");
-    export_to_matlab_csv(coupling_matrix, "Ct_DLFDM.csv");
-    export_to_matlab_csv(mass_matrix_fg, "M_DLFDM.csv");
-    std::cout << "Done." << std::endl;
-
-    // Compute scaling of ||Cx1 - Mx_2||_2
-
-    // Helper function taken from deal.II test suite to get uniformly
-    // distributed random value between min and max
-    auto random_value = [](const double &min = static_cast<double>(0),
-                           const double &max = static_cast<double>(1)) {
-      return min + (max - min) * (static_cast<double>(std::rand()) /
-                                  static_cast<double>(RAND_MAX));
-    };
-
-    Vector<double> x_1(dof_handler_bg.n_dofs());
-    for (unsigned int i = 0; i < dof_handler_bg.n_dofs(); ++i)
-      x_1[i] = random_value();
-    Vector<double> x_2(dof_handler_fg.n_dofs());
-    for (unsigned int i = 0; i < dof_handler_fg.n_dofs(); ++i)
-      x_2[i] = random_value();
-
-    // normalize
-    x_1 /= x_1.l2_norm();
-    x_2 /= x_2.l2_norm();
-
-    Vector<double> result(dof_handler_fg.n_dofs());
-    coupling_matrix.Tvmult(result, x_1);  // Cx_1
-    x_2 *= -1.;
-    mass_matrix_fg.vmult_add(result, x_2);  // Cx_1 - Mx_2
-    double norm = result.l2_norm();
-    std::cout << "h_immersed = " << GridTools::maximal_cell_diameter(tria_fg)
-              << ", norm of ||Cx1 - Mx_2||_2 = " << norm << std::endl;
+    AssertThrow(
+        false,
+        ExcNotImplemented(
+            "Not implemented in parallel. Use the serial demo version."));
   }
 
-  typename SolverFGMRES<BlockVector<Number>>::AdditionalData data_fgmres;
+  typename SolverFGMRES<TrilinosWrappers::MPI::BlockVector>::AdditionalData
+      data_fgmres;
   data_fgmres.max_basis_size = 50;
-  SolverFGMRES<BlockVector<Number>> solver_fgmres(
+  SolverFGMRES<TrilinosWrappers::MPI::BlockVector> solver_fgmres(
       parameters.outer_solver_control, data_fgmres);
 
   // Wrap the actual FGMRES solve in another scope in order to discard
@@ -799,11 +855,13 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
 
       // We wither use a fixed number of iterations inside the inner solver...
       if (parameters.use_fixed_iterations)
-        solver_lagrangian_scalar = std::make_unique<SolverCG<Vector<double>>>(
-            parameters.iteration_number_control);
+        solver_lagrangian_scalar =
+            std::make_unique<SolverCG<TrilinosWrappers::MPI::Vector>>(
+                parameters.iteration_number_control);
       else  //... or we iterate as usual.
-        solver_lagrangian_scalar = std::make_unique<SolverCG<Vector<double>>>(
-            parameters.inner_solver_control);
+        solver_lagrangian_scalar =
+            std::make_unique<SolverCG<TrilinosWrappers::MPI::Vector>>(
+                parameters.inner_solver_control);
 
       // Define block preconditioner using AL approach
       auto A11_aug_inv =
@@ -812,7 +870,7 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
           inverse_operator(A22_aug, *solver_lagrangian_scalar, amg_prec_A22);
 
       EllipticInterfacePreconditioners::BlockTriangularALPreconditionerModified
-          preconditioner_AL(C, M, invW, parameters.gamma_AL_background,
+          preconditioner_AL(C, M, invM, invW, parameters.gamma_AL_background,
                             A11_aug_inv, A22_aug_inv);
 
       system_rhs_block.block(2) = 0;  // last row of the rhs is 0
@@ -820,45 +878,11 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
       solver_fgmres.solve(system_operator, system_solution_block,
                           system_rhs_block, preconditioner_AL);
 
-      std::cout << "Norm of solution: "
-                << system_solution_block.block(0).l2_norm() << std::endl;
+      pcout << "Norm of solution: " << system_solution_block.block(0).l2_norm()
+            << std::endl;
     } else {
-      // Check that gamma is not too small. We force also gamma2 to be equal to
-      // gamma.
-      AssertThrow(
-          parameters.gamma_AL_background > 1.,
-          ExcMessage("Parameter gamma is probably too small for classical AL "
-                     "preconditioner."));
-      parameters.gamma_AL_immersed = parameters.gamma_AL_background;
-
-      std::cout << "\t ************************************** WARNING "
-                   "************************************** \n"
-                   "\t USING IDEAL AL PRECONDITIONER. SHOULD BE USED ONLY FOR "
-                   "TESTING PURPOSES.\n"
-                << "\t ***********************************************"
-                   "************************************** "
-                << std::endl;
-
-      auto AMG_A1 = linear_operator(stiffness_matrix_bg, amg_prec_A11);
-      auto AMG_A2 = linear_operator(stiffness_matrix_fg, amg_prec_A22);
-      // Define preconditioner for the augmented block
-      auto prec_aug = block_operator<2, 2, BlockVector<double>>(
-          {{{{AMG_A1, NullF}}, {{NullS, AMG_A2}}}});
-      PreconditionIdentity prec_id;
-      auto Aug = block_operator<2, 2, BlockVector<double>>(
-          {{{{A11_aug, A12_aug}},
-            {{A21_aug, A22_aug}}}});  // augmented block to be inverted
-
-      SolverCG<BlockVector<double>> solver_lagrangian(
-          parameters.inner_solver_control);
-      auto Aug_inv = inverse_operator(Aug, solver_lagrangian, prec_aug);
-
-      EllipticInterfacePreconditioners::BlockTriangularALPreconditioner
-          preconditioner_AL(Aug_inv, C, M, invW,
-                            parameters.gamma_AL_background);
-      system_rhs_block.block(2) = 0;  // last row of the rhs is 0
-      solver_fgmres.solve(system_operator, system_solution_block,
-                          system_rhs_block, preconditioner_AL);
+      AssertThrow(false,
+                  ExcNotImplemented("Ideal case not implemented in parallel."));
     }
     // Finally, distribute the constraints
     constraints_bg.distribute(system_solution_block.block(0));
@@ -877,14 +901,15 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
     convergence_table.add_value("gamma2 (AL)", parameters.gamma_AL_immersed);
   convergence_table.add_value("Outer iterations", n_outer_iterations);
 
-  std::cout << "Solved in " << n_outer_iterations << " iterations"
-            << (parameters.outer_solver_control.last_step() < 10 ? "  " : " ")
-            << "\n";
+  pcout << "Solved in " << n_outer_iterations << " iterations"
+        << (parameters.outer_solver_control.last_step() < 10 ? "  " : " ")
+        << "\n";
 
   // Do some sanity checks: Check the constraints residual and the condition
   // number of CCt.
   if (parameters.do_sanity_checks) {
-    Vector<Number> difference_constraints = system_solution_block.block(2);
+    TrilinosWrappers::MPI::Vector difference_constraints =
+        system_solution_block.block(2);
 
     coupling_matrix.Tvmult(difference_constraints,
                            system_solution_block.block(0));
@@ -893,23 +918,23 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
     mass_matrix_fg.vmult_add(difference_constraints,
                              system_solution_block.block(1));
 
-    std::cout << "L infty norm of constraints residual "
-              << difference_constraints.linfty_norm() << "\n";
+    pcout << "L infty norm of constraints residual "
+          << difference_constraints.linfty_norm() << "\n";
 
     // Estimate condition number
-    std::cout << "Estimate condition number of CCt using CG" << std::endl;
-    Vector<double> v_eig(system_solution_block.block(1));
+    pcout << "Estimate condition number of CCt using CG" << std::endl;
+    TrilinosWrappers::MPI::Vector v_eig(system_solution_block.block(1));
     SolverControl solver_control_eig(v_eig.size(), 1e-12, false);
-    SolverCG<Vector<double>> solver_eigs(solver_control_eig);
+    SolverCG<TrilinosWrappers::MPI::Vector> solver_eigs(solver_control_eig);
 
     solver_eigs.connect_condition_number_slot(
         std::bind(output_double_number, std::placeholders::_1,
                   "Condition number estimate: "));
     auto BBt = C * Ct;
 
-    Vector<double> u(v_eig);
+    TrilinosWrappers::MPI::Vector u(v_eig);
     u = 0.;
-    Vector<double> f(v_eig);
+    TrilinosWrappers::MPI::Vector f(v_eig);
     f = 1.;
     PreconditionIdentity prec_no;
     try {
@@ -963,14 +988,15 @@ void EllipticInterfaceDLM<dim>::output_results(
     convergence_table.evaluate_convergence_rates(
         "H1", ConvergenceTable::reduction_rate_log2);
   }
-  std::cout << "==============================================================="
-               "========================="
-            << std::endl;
-  convergence_table.write_text(std::cout,
-                               TableHandler::TextOutputFormat::org_mode_table);
-  std::cout << "==============================================================="
-               "========================="
-            << std::endl;
+  pcout << "==============================================================="
+           "========================="
+        << std::endl;
+  if (Utilities::MPI::this_mpi_process(comm) == 0)
+    convergence_table.write_text(
+        std::cout, TableHandler::TextOutputFormat::org_mode_table);
+  pcout << "==============================================================="
+           "========================="
+        << std::endl;
 
   // Do not dump grids to disk if they are too large
   if (tria_bg.n_active_cells() < 1e6) {
@@ -979,84 +1005,44 @@ void EllipticInterfaceDLM<dim>::output_results(
     data_out_fg.add_data_vector(system_solution_block.block(1), "u2");
     data_out_fg.add_data_vector(system_solution_block.block(2), "lambda");
     data_out_fg.build_patches();
-    std::ofstream output_fg(parameters.output_directory + "/" +
-                            "solution-immersed-" + std::to_string(ref_cycle) +
-                            ".vtu");
-    data_out_fg.write_vtu(output_fg);
+    data_out_fg.write_vtu_with_pvtu_record(
+        "", "solution-immersed-cycle-" + std::to_string(ref_cycle), 1, comm,
+        numbers::invalid_unsigned_int, 0);
 
     DataOut<dim> data_out_bg;
     data_out_bg.attach_dof_handler(dof_handler_bg);
     data_out_bg.add_data_vector(system_solution_block.block(0), "u");
+
+    Vector<float> subdomain(tria_bg.n_active_cells());
+    for (unsigned int i = 0; i < subdomain.size(); ++i)
+      subdomain(i) = tria_bg.locally_owned_subdomain();
+    data_out_bg.add_data_vector(subdomain, "subdomain");
+
     data_out_bg.build_patches();
-    std::ofstream output_bg(parameters.output_directory + "/" +
-                            "solution-background-" + std::to_string(ref_cycle) +
-                            ".vtu");
-    data_out_bg.write_vtu(output_bg);
-    std::cout << "Solutions written to disk." << std::endl;
+
+    data_out_bg.write_vtu_with_pvtu_record(
+        "", "solution-background-cycle" + std::to_string(ref_cycle), 1, comm,
+        numbers::invalid_unsigned_int, 0);
+
+    pcout << "Solutions written to disk." << std::endl;
   }
 }
 
 template <int dim>
 void EllipticInterfaceDLM<dim>::run() {
-  // If we want to select the gamma value experimentally, we first run a
-  // coarse problem for different sampled values of gamma. This makes sense
-  // only for the modified AL preconditioner, so we check beforehand if it is
-  // used.
-
-  if (parameters.do_parameter_study &&
-      parameters.use_modified_AL_preconditioner) {
-    std::vector<double> gamma_values = linspace(
-        parameters.start_gamma, parameters.end_gamma, parameters.n_steps_gamma);
-    std::vector<unsigned int> outer_iterations;
-    generate_grids();
-    system_setup();
-    setup_coupling();
-    assemble();
-    // Loop over possible values of gamma and store outer iterations.
-    for (const double gamma : gamma_values) {
-      parameters.gamma_AL_background = gamma;
-      parameters.gamma_AL_immersed = gamma;
-      std::cout << "gamma_AL_background= " << parameters.gamma_AL_background
-                << std::endl;
-      unsigned int iters = solve();
-      outer_iterations.push_back(iters);
-      system_solution_block = 0;  // reset solution
-    }
-    // Find the minimum index
-    const unsigned int min_index =
-        std::min_element(outer_iterations.begin(), outer_iterations.end()) -
-        outer_iterations.begin();
-
-    parameters.gamma_AL_background = gamma_values[min_index];
-    parameters.gamma_AL_immersed = parameters.gamma_AL_background;
-    std::cout << "============================================================="
-                 "==========================="
-              << std::endl;
-    std::cout << "OPTIMAL VALUE FOR GAMMA FOUND EXPERIMENTALLY: "
-              << parameters.gamma_AL_background << std::endl;
-    std::cout << "START CONVERGENCE STUDY WITH GAMMA: "
-              << parameters.gamma_AL_background << std::endl;
-
-    // If we have determined the optimal gamma value, we can proceed with the
-    // refinement cycles using such a value of gamma.
-  }
-
-  // reset solution and grids
-  system_solution_block = 0;
-  tria_bg.clear();
-  tria_fg.clear();
-  convergence_table.clear();
+  AssertThrow(
+      parameters.use_modified_AL_preconditioner,
+      ExcMessage("Only modified AL preconditioner is supported in parallel."));
 
   for (unsigned int ref_cycle = 0; ref_cycle < parameters.n_refinement_cycles;
        ++ref_cycle) {
-    std::cout << "============================================================="
-                 "==========================="
-              << std::endl;
-    std::cout << "Refinement cycle: " << ref_cycle << std::endl;
-    std::cout << "gamma_AL_background= " << parameters.gamma_AL_background
-              << std::endl;
-    std::cout << "gamma_AL_immersed= " << parameters.gamma_AL_immersed
-              << std::endl;
+    pcout << "============================================================="
+             "==========================="
+          << std::endl;
+    pcout << "Refinement cycle: " << ref_cycle << std::endl;
+    pcout << "gamma_AL_background= " << parameters.gamma_AL_background
+          << std::endl;
+    pcout << "gamma_AL_immersed= " << parameters.gamma_AL_immersed << std::endl;
     // Create the grids only during the first refinement cycle
     if (ref_cycle == 0) {
       generate_grids();
@@ -1070,13 +1056,6 @@ void EllipticInterfaceDLM<dim>::run() {
     setup_coupling();
     assemble();
     solve();
-    if (parameters.use_modified_AL_preconditioner &&
-        parameters.use_sqrt_2_rule) {
-      parameters.gamma_AL_background /=
-          std::sqrt(2.);  // using sqrt(2)-rule from modified - AL paper
-      parameters.gamma_AL_immersed /=
-          std::sqrt(2.);  // using sqrt(2)-rule from modified - AL paper
-    }
     output_results(ref_cycle);
   }
 }
@@ -1085,7 +1064,7 @@ int main(int argc, char *argv[]) {
   try {
     const int dim = 2;
     Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
-    deallog.depth_console(10);
+    mpi_initlog(true, 10);
 
     ProblemParameters<dim> parameters;
     std::string parameter_file;
@@ -1095,7 +1074,7 @@ int main(int argc, char *argv[]) {
       parameter_file = "parameters_elliptic_interface.prm";
     ParameterAcceptor::initialize(parameter_file, "used_parameters.prm");
 
-    EllipticInterfaceDLM<dim> solver(parameters);
+    EllipticInterfaceDLM<dim> solver(parameters, MPI_COMM_WORLD);
     solver.run();
   } catch (std::exception &exc) {
     std::cerr << std::endl
