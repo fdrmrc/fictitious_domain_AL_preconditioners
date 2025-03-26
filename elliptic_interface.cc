@@ -156,7 +156,7 @@ class ProblemParameters : public ParameterAcceptor {
 
   unsigned int verbosity_level = 10;
 
-  bool use_modified_AL_preconditioner = false;
+  bool use_modified_AL_preconditioner = true;
 
   bool do_parameter_study = false;
   // Define range of values for gamma, in case we want to determine gamma
@@ -167,7 +167,9 @@ class ProblemParameters : public ParameterAcceptor {
 
   unsigned int n_steps_gamma = 100;
 
-  bool use_diagonal_inverse = false;
+  std::string mass_solver = "direct";
+
+  std::string direct_solver_type = "Amesos_Klu";
 
   bool use_sqrt_2_rule = false;
 
@@ -262,15 +264,29 @@ ProblemParameters<dim>::ProblemParameters()
     add_parameter("Do parameter study", do_parameter_study,
                   "Perform a parameter study on the AL parameter gamma on a "
                   "coarse mesh to select experimentally an optimal value.");
-    add_parameter("Use diagonal inverse", use_diagonal_inverse,
-                  "Use diagonal approximation for the inverse (squared) of the "
-                  "immersed mass matrix.");
     add_parameter("Use sqrt(2)-rule for gamma", use_sqrt_2_rule,
                   "Use sqrt(2)-rule for gamma. It makes sense only for "
                   "modified AL variant.");
     add_parameter("gamma fluid", gamma_AL_background);
     add_parameter("gamma solid", gamma_AL_immersed);
     add_parameter("Verbosity level", verbosity_level);
+  }
+  leave_subsection();
+
+  enter_subsection("Mass solver");
+  {
+    add_parameter("Solver for mass matrix", mass_solver,
+                  "Type of solver used to solve for the mass matrix.",
+                  ParameterAcceptor::prm,
+                  Patterns::Selection("direct|iterative|diagonal"));
+    add_parameter("Direct solver type", direct_solver_type,
+                  "The type of **direct** solver you want to use (if you "
+                  "selected direct above).",
+                  ParameterAcceptor::prm,
+                  Patterns::Selection(
+                      "Amesos_Lapack|Amesos_Scalapack|Amesos_Klu|Amesos_"
+                      "Umfpack|Amesos_Pardiso|Amesos_Taucs|Amesos_Superlu|"
+                      "Amesos_Superludist|Amesos_Dscpack|Amesos_Mumps"));
   }
   leave_subsection();
 
@@ -762,44 +778,78 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   // mass matrix.
   auto invM = null_operator(M);
   auto invW = null_operator(M);
-  // SparseDirectUMFPACK M_inv_umfpack;
   SolverControl solver_control(100, 1e-12, false, false);
   SolverCG<TrilinosWrappers::MPI::Vector> cg_solver(solver_control);
-  // Using inverse of diagonal mass matrix (squared)
-  // TODO: check
+
   TrilinosWrappers::MPI::Vector inverse_diag_mass_squared(locally_owned_dofs_fg,
                                                           comm);
-  // for (unsigned int i = 0; i < dof_handler_fg.n_dofs(); ++i)
-  for (const auto i : locally_owned_dofs_fg)
+
+  for (const types::global_dof_index i : locally_owned_dofs_fg)
     inverse_diag_mass_squared(i) =
         1. / (mass_matrix_fg.diag_element(i) * mass_matrix_fg.diag_element(i));
   inverse_diag_mass_squared.compress(VectorOperation::insert);
 
-  // TODO: parallelize
-  DiagonalMatrix<Vector<double>> diag_inverse;
-  if (parameters.use_diagonal_inverse == true) {
-    // TODO: adapt
-    // diag_inverse.reinit(inverse_diag_mass_squared);
-    // invW = linear_operator(diag_inverse);
-    // invM
-  } else {
-    // Use direct inversion
+  TrilinosWrappers::SparseMatrix diag_inverse;
+  TrilinosWrappers::SolverDirect::AdditionalData data;
+  data.solver_type = parameters.direct_solver_type;
+  // dummy solvercontrol to suppress output of direct solver
+  SolverControl direct_control{1, 1e-12, false, false};
+  TrilinosWrappers::SolverDirect solver_direct_mass(direct_control, data);
+
+  if (std::strcmp(parameters.mass_solver.c_str(), "diagonal") == 0) {
+    TrilinosWrappers::SparsityPattern diag_inverse_sparsity;
+    diag_inverse_sparsity.reinit(locally_owned_dofs_fg, comm);
+
+    for (const types::global_dof_index dof : locally_owned_dofs_fg)
+      diag_inverse_sparsity.add(dof,
+                                dof);  // Add diagonal entry only
+    diag_inverse_sparsity.compress();
+
+    diag_inverse.reinit(diag_inverse_sparsity);
+    for (const types::global_dof_index dof : locally_owned_dofs_fg)
+      diag_inverse.set(dof, dof, inverse_diag_mass_squared(dof));
+    diag_inverse.compress(VectorOperation::insert);
+
+    invW = linear_operator<TrilinosWrappers::MPI::Vector,
+                           TrilinosWrappers::MPI::Vector, PayloadType>(
+        diag_inverse);
+  } else if (std::strcmp(parameters.mass_solver.c_str(), "direct") == 0) {
+    // Use direct solver from Trilinos
     {
       TimerOutput::Scope t(computing_timer, "Factorize mass matrix");
-      // M_inv_umfpack.initialize(mass_matrix_fg);  // inverse immersed mass
-      // matrix
+      solver_direct_mass.initialize(mass_matrix_fg, data);
+    }
+
+    invM = linear_operator<TrilinosWrappers::MPI::Vector,
+                           TrilinosWrappers::MPI::Vector, PayloadType>(
+        M, solver_direct_mass);
+    invW = invM * invM;
+  } else if (std::strcmp(parameters.mass_solver.c_str(), "iterative") == 0) {
+    // Invert M through a iterative solver + ILU. TODO: CG + mass lumping
+    {
+      TimerOutput::Scope t(computing_timer, "Factorize mass matrix");
       M_inv_ilu.initialize(mass_matrix_fg);
     }
     invM = inverse_operator(M, cg_solver, M_inv_ilu);
     invW = invM * invM;
+  } else {
+    Assert(false, ExcNotImplemented("Choose one type of mass solver between "
+                                    "diagonal, direct, and iterative."));
   }
 
   // Define augmented blocks. Notice that A22_aug is actually A_omega2 +
-  // gamma_AL_background * Id
+  // gamma_AL_immersed * Id
+  stiffness_matrix_fg_plus_id.copy_from(stiffness_matrix_fg);
+  for (const types::global_dof_index idx : locally_owned_dofs_fg)
+    stiffness_matrix_fg_plus_id.add(idx, idx, parameters.gamma_AL_immersed);
+  // auto A22_aug = A_omega2 + parameters.gamma_AL_immersed *
+  // identity_operator(M);
   auto A11_aug = A_omega1 + parameters.gamma_AL_background * Ct * invW * C;
-  auto A22_aug = A_omega2 + parameters.gamma_AL_immersed * M * invW * M;
-  auto A12_aug = -parameters.gamma_AL_background * Ct * invW * M;
-  auto A21_aug = -parameters.gamma_AL_immersed * M * invW * C;
+  auto A22_aug = linear_operator<TrilinosWrappers::MPI::Vector,
+                                 TrilinosWrappers::MPI::Vector, PayloadType>(
+      stiffness_matrix_fg_plus_id);
+  auto A12_aug = -parameters.gamma_AL_background * Ct * invM;
+  auto A21_aug = -parameters.gamma_AL_immersed * invM * C;
 
   // Augmented (equivalent) system to be solved
   auto system_operator =
@@ -819,12 +869,7 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   amg_prec_A11.initialize(augmented_matrix);
   pcout << "Initialized AMG for A_1" << std::endl;
 
-  // Initialize AMG prec for the A_2 augmented block
   TrilinosWrappers::PreconditionAMG amg_prec_A22;
-  // immersed matrix (beta_2 - beta) (grad u,grad v) + gamma*Id
-  stiffness_matrix_fg_plus_id.copy_from(stiffness_matrix_fg);
-  for (const types::global_dof_index idx : locally_owned_dofs_fg)
-    stiffness_matrix_fg_plus_id.add(idx, idx, parameters.gamma_AL_immersed);
   amg_prec_A22.initialize(stiffness_matrix_fg_plus_id);
   pcout << "Initialized AMG for A_2" << std::endl;
 

@@ -33,10 +33,6 @@ set Variable names      = x,y,t
    # select experimentally an optimal value.
 set Do parameter study             = false
 
-   # Use diagonal approximation for the inverse (squared) of the immersed
-   # mass matrix.
-set Use diagonal inverse           = false
-
    # Use the modified AL preconditioner. If false, the classical AL
    # preconditioner is used.
 set Use modified AL preconditioner = true
@@ -47,6 +43,15 @@ set Use sqrt(2)-rule for gamma     = false
 set Verbosity level                = 10
 set gamma fluid                    = 10
 set gamma solid                    = 1e-2
+  end
+  
+  subsection Mass solver
+#   Type of solver used to solve for the mass matrix.
+set Solver for mass matrix            = direct
+
+# The type of **direct** solver you want to use (if you selected direct above).
+set Direct solver type                = Amesos_Klu
+
   end
 
   subsection Grid generation
@@ -102,7 +107,7 @@ set Initial background refinement = 4
 set Initial immersed refinement   = 2
 
    # Number of refinement cycles to perform convergence studies.
-set Refinemented cycles           = 5
+set Refinemented cycles           = 7
   end
 
 end
