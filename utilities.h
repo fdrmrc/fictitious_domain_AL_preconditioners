@@ -1,11 +1,16 @@
 #ifndef utilities_h
 #define utilities_h
 
+#include <deal.II/base/exceptions.h>
+#include <deal.II/base/function.h>
 #include <deal.II/base/logstream.h>
+#include <deal.II/lac/dynamic_sparsity_pattern.h>
+#include <deal.II/lac/linear_operator.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/sparsity_pattern.h>
 #include <deal.II/lac/utilities.h>
 #include <deal.II/lac/vector.h>
+#include <deal.II/numerics/matrix_tools.h>
 
 #include <type_traits>
 
@@ -51,7 +56,7 @@ double compute_l2_norm_matrix(const SparseMatrix<double>& C,
 template <typename MatrixType>
 void export_to_matlab_csv(const MatrixType& matrix,
                           const std::string& filename) {
-  if (matrix.m() > 1e3 || matrix.n() > 1e3) {
+  if (matrix.m() > 1e4 || matrix.n() > 1e4) {
     return;
   }
   std::ofstream out(filename);
@@ -303,8 +308,8 @@ void build_AMG_augmented_block(
   amg_data.aggregation_threshold = 0.02;
 
   std::cout << "Before initializing AMG" << std::endl;
-  amg_prec.initialize(augmented_block, amg_data);                 //!
-  auto prec_for_cg = linear_operator(augmented_block, amg_prec);  //!
+  amg_prec.initialize(augmented_block, amg_data);  //!
+  // auto prec_for_cg = linear_operator(augmented_block, amg_prec);  //!
   dealii::deallog << "Initialized AMG preconditioner for augmented block"
                   << std::endl;
 
@@ -317,6 +322,166 @@ void build_AMG_augmented_block(
 
   export_to_matlab_csv(augmented_block, "augmented_matrix_stokes.csv");
   export_sparse_to_matlab_csv(augmented_block, "augmented_matrix_stokes.txt");
+}
+
+std::vector<double> linspace(double start, double end, std::size_t num) {
+  AssertThrow(start < end,
+              ExcMessage("Invalid range given. Check start and stop values."));
+  std::vector<double> result(num);
+  double step = (end - start) / (num - 1);
+
+  // Generate values using std::iota and a lambda for transformation
+  std::iota(result.begin(), result.end(), 0);
+  for (std::size_t i = 0; i < num; ++i) {
+    result[i] = start + step * i;
+  }
+
+  return result;
+}
+
+template <int dim, int spacedim = dim>
+void build_AMG_augmented_block_scalar(
+    const DoFHandler<dim, spacedim>& space_dh,
+    const SparseMatrix<double>& coupling_matrix,
+    const SparseMatrix<double>& stiffness_matrix,
+    const Vector<double>& inverse_diag_mass_squared,
+    const SparsityPattern& coupling_sparsity,
+    const AffineConstraints<double>& space_constraints, const double gamma,
+    const double beta_1, TrilinosWrappers::PreconditionAMG& amg_prec) {
+#ifdef DEAL_II_WITH_TRILINOS
+
+  // Create the transpose.
+
+  // First, wrap the original matrix in a Trilinos matrix
+  TrilinosWrappers::SparseMatrix coupling_trilinos;
+  SparsityPattern sp;
+  sp.copy_from(coupling_sparsity);
+  coupling_trilinos.reinit(coupling_matrix, 1e-15, true, &sp);
+  auto trilinos_matrix = coupling_trilinos.trilinos_matrix();
+
+  // Now, transpose this matrix through Trilinos
+  Epetra_RowMatrixTransposer transposer(&trilinos_matrix);
+  Epetra_CrsMatrix* transpose_matrix;
+  int err = transposer.CreateTranspose(true, transpose_matrix);
+  AssertThrow(err == 0, ExcMessage("Transpose failure!"));
+  // #ifdef DEBUG
+  //   std::cout << "rows original matrix:" << trilinos_matrix.NumGlobalRows()
+  //             << std::endl;
+  //   std::cout << "cols original matrix:" << trilinos_matrix.NumGlobalCols()
+  //             << std::endl;
+  //   std::cout << "rows:" << transpose_matrix->NumGlobalRows() << std::endl;
+  //   std::cout << "cols:" << transpose_matrix->NumGlobalCols() << std::endl;
+  // #endif
+
+  // Now, store the transpose in a deal.II matrix for mat-mat multiplication
+
+  // First, create the sparsity pattern for the transpose
+  DynamicSparsityPattern dsp_coupling_sparsity_transposed;
+  dsp_coupling_sparsity_transposed.reinit(coupling_sparsity.n_cols(),
+                                          coupling_sparsity.n_rows());
+
+  // Loop over the original sparsity pattern
+  for (unsigned int row = 0; row < coupling_sparsity.n_rows(); ++row) {
+    for (dealii::SparsityPattern::iterator it = coupling_sparsity.begin(row);
+         it != coupling_sparsity.end(row); ++it) {
+      unsigned int col = it->column();
+      // Insert the transposed entry
+      dsp_coupling_sparsity_transposed.add(col, row);
+    }
+  }
+  SparsityPattern coupling_sparsity_transposed;
+  coupling_sparsity_transposed.copy_from(dsp_coupling_sparsity_transposed);
+  SparseMatrix<double> coupling_t;
+  coupling_t.reinit(coupling_sparsity_transposed);
+
+  // Now populate the matrix
+  const int num_rows = coupling_t.m();
+  for (int i = 0; i < num_rows; ++i) {
+    int num_entries;
+    double* values;
+    int* indices;
+
+    transpose_matrix->ExtractMyRowView(i, num_entries, values, indices);
+
+    for (int j = 0; j < num_entries; ++j) {
+      coupling_t.set(i, transpose_matrix->GCID(indices[j]), values[j]);
+    }
+  }
+#ifdef DEBUG
+  std::cout << "Populated the transpose matrix" << std::endl;
+#endif
+
+  // Now, perform matmat multiplication
+  const auto& space_fe = space_dh.get_fe();
+  SparseMatrix<double> augmented_block, BtWinvB;
+  DynamicSparsityPattern dsp_aux(space_dh.n_dofs(), space_dh.n_dofs());
+  const unsigned int dofs_per_cell = space_fe.n_dofs_per_cell();
+  std::vector<types::global_dof_index> current_dof_indices(dofs_per_cell);
+  dsp_aux.compute_mmult_pattern(coupling_sparsity,
+                                coupling_sparsity_transposed);
+
+  // Add sparsity from matrix2
+  for (unsigned int row = 0; row < space_dh.n_dofs(); ++row) {
+    for (auto it = stiffness_matrix.begin(row); it != stiffness_matrix.end(row);
+         ++it) {
+      dsp_aux.add(row, it->column());
+    }
+  }
+
+  SparsityPattern sp_aux;
+  sp_aux.copy_from(dsp_aux);
+  BtWinvB.reinit(sp_aux);
+
+  // Check that is the transpose
+
+  // #ifdef DEBUG
+  //   for (unsigned int i = 0; i < coupling_matrix.m(); ++i)
+  //     for (unsigned int j = 0; j < coupling_matrix.n(); ++j) {
+  //       std::cout << "Entry " << coupling_matrix.el(i, j) << " and "
+  //                 << coupling_t.el(j, i) << std::endl;
+  //       Assert((coupling_matrix.el(i, j) - coupling_t.el(j, i) < 1e-14),
+  //              ExcMessage("Transpose matrix is wrong!"));
+  //     }
+  // #endif
+
+  SparseMatrix<double> coupling_matrix_copy;
+  coupling_matrix_copy.reinit(coupling_matrix);
+  coupling_matrix_copy.copy_from(coupling_matrix);
+  coupling_matrix_copy.mmult(BtWinvB, coupling_t, inverse_diag_mass_squared,
+                             false);
+#ifdef DEBUG
+  std::cout << "Performed mat-mat multiplication" << std::endl;
+  std::cout << "Rows " << BtWinvB.m() << std::endl;
+  std::cout << "Cols " << BtWinvB.n() << std::endl;
+  std::cout << "Norm" << BtWinvB.l1_norm() << std::endl;
+#endif
+
+  SparseMatrix<double> stiffness_matrix_copy;
+  stiffness_matrix_copy.reinit(sp_aux);
+
+  Functions::ConstantFunction<dim> function{
+      beta_1};  // the A_1 matrix is beta_1 (\grad u, \grad v)
+  Vector<double> embedding_rhs_copy;
+  embedding_rhs_copy.reinit(space_dh.n_dofs());
+  MatrixTools::create_laplace_matrix(
+      space_dh, QGauss<spacedim>(space_fe.degree + 1), stiffness_matrix_copy,
+      &function, space_constraints);
+
+  augmented_block.reinit(stiffness_matrix_copy);
+  augmented_block.copy_from(stiffness_matrix_copy);
+  augmented_block.add(gamma, BtWinvB);
+
+  amg_prec.initialize(augmented_block);                           //!
+  auto prec_for_cg = linear_operator(augmented_block, amg_prec);  //!
+  std::cout << "Initialized AMG for A_1" << std::endl;
+
+// Print matrices to file to check if one is the transpose of the other
+// #ifdef DEBUG
+//   coupling_matrix.print_formatted(std::cout);
+//   coupling_t.print_formatted(std::cout);
+//   inverse_squares.print(std::cout);
+// #endif
+#endif
 }
 
 #endif
