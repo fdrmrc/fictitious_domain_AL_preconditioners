@@ -390,8 +390,6 @@ class EllipticInterfaceDLM {
 
   TrilinosWrappers::SparseMatrix stiffness_matrix_bg;
   TrilinosWrappers::SparseMatrix stiffness_matrix_fg;
-  TrilinosWrappers::SparseMatrix
-      stiffness_matrix_fg_plus_id;  // A_2 + gammaId, needed for modifiedAL
   TrilinosWrappers::SparseMatrix coupling_matrix;
   TrilinosWrappers::SparseMatrix coupling_matrix_transpose;
 
@@ -581,9 +579,6 @@ void EllipticInterfaceDLM<dim>::system_setup() {
   setup_stiffness_matrix(dof_handler_fg, constraints_fg, locally_owned_dofs_fg,
                          locally_relevant_dofs_fg, stiffness_matrix_fg);
 
-  setup_stiffness_matrix(dof_handler_fg, constraints_fg, locally_owned_dofs_fg,
-                         locally_relevant_dofs_fg, stiffness_matrix_fg_plus_id);
-
   mass_matrix_fg.reinit(stiffness_matrix_fg);  // copy parallel layout
 
   // locally owned DoF for each block: (u,u_2,lambda)
@@ -757,9 +752,10 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   auto A_omega1 = linear_operator<TrilinosWrappers::MPI::Vector,
                                   TrilinosWrappers::MPI::Vector, PayloadType>(
       stiffness_matrix_bg);
-  auto A_omega2 = linear_operator<TrilinosWrappers::MPI::Vector,
-                                  TrilinosWrappers::MPI::Vector, PayloadType>(
-      stiffness_matrix_fg);
+  // auto A_omega2 = linear_operator<TrilinosWrappers::MPI::Vector,
+  //                                 TrilinosWrappers::MPI::Vector,
+  //                                 PayloadType>(
+  //     stiffness_matrix_fg);
   auto M = linear_operator<TrilinosWrappers::MPI::Vector,
                            TrilinosWrappers::MPI::Vector, PayloadType>(
       mass_matrix_fg);
@@ -839,15 +835,14 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
 
   // Define augmented blocks. Notice that A22_aug is actually A_omega2 +
   // gamma_AL_immersed * Id
-  stiffness_matrix_fg_plus_id.copy_from(stiffness_matrix_fg);
+
   for (const types::global_dof_index idx : locally_owned_dofs_fg)
-    stiffness_matrix_fg_plus_id.add(idx, idx, parameters.gamma_AL_immersed);
-  // auto A22_aug = A_omega2 + parameters.gamma_AL_immersed *
-  // identity_operator(M);
+    stiffness_matrix_fg.add(idx, idx, parameters.gamma_AL_immersed);
+
   auto A11_aug = A_omega1 + parameters.gamma_AL_background * Ct * invW * C;
   auto A22_aug = linear_operator<TrilinosWrappers::MPI::Vector,
                                  TrilinosWrappers::MPI::Vector, PayloadType>(
-      stiffness_matrix_fg_plus_id);
+      stiffness_matrix_fg);
   auto A12_aug = -parameters.gamma_AL_background * Ct * invM;
   auto A21_aug = -parameters.gamma_AL_immersed * invM * C;
 
@@ -870,7 +865,7 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   pcout << "Initialized AMG for A_1" << std::endl;
 
   TrilinosWrappers::PreconditionAMG amg_prec_A22;
-  amg_prec_A22.initialize(stiffness_matrix_fg_plus_id);
+  amg_prec_A22.initialize(stiffness_matrix_fg);
   pcout << "Initialized AMG for A_2" << std::endl;
 
   if (parameters.export_matrices_for_eig_analysis) {
