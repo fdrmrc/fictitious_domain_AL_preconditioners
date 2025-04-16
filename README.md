@@ -3,7 +3,7 @@
 This repository contains application codes demonstrating *Augmented-Lagrangian*-based preconditioners for Fictitious Domain-type solvers. They
 are based on the [deal.II library](https://www.dealii.org). All problems are meant to run both in 2D and 3D.
 
-The associated preprint can be found online on arXiv. [TODO: add it]
+The associated preprint can be found online on [arXiv](https://arxiv.org/abs/2504.11339).
 
 
 
