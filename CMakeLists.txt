@@ -35,7 +35,7 @@ endif()
 deal_ii_initialize_cached_variables()
 
 # Define multiple executables
-add_executable(immersed_laplace block_demo.cc)
+add_executable(immersed_laplace immersed_laplace.cc)
 add_executable(stokes_immersed_boundary stokes_immersed_boundary.cc)
 add_executable(elliptic_interface elliptic_interface.cc)
 

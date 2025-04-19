@@ -55,7 +55,7 @@
 #include <Epetra_RowMatrixTransposer.h>
 #endif
 
-namespace Step60 {
+namespace ImmersedLaplaceSolver {
 using namespace dealii;
 
 //  Struct used to store iteration counts
@@ -507,148 +507,7 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     solution = K_inv * (embedding_rhs - Ct * lambda);
 
     constraints.distribute(solution);
-  }
-  // // GMRES with left lower triangular preconditioner
-  else if (std::strcmp(parameters.solver.c_str(), "GMRES") == 0) {
-    std::cout << "Solving with GMRES" << std::endl;
-    SparseDirectUMFPACK K_inv_umfpack;
-    K_inv_umfpack.initialize(stiffness_matrix);
-
-    auto K = linear_operator(stiffness_matrix);
-    auto Ct = linear_operator(coupling_matrix);
-    auto C = transpose_operator(Ct);
-    auto M = linear_operator(mass_matrix);
-    const auto Zero = M * 0.0;
-
-    auto K_inv = linear_operator(K, K_inv_umfpack);
-
-    auto S_inv = C * K * Ct + M;
-    // auto S_inv = C * K * Ct;
-
-    auto AA =
-        block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
-
-    auto prec = block_operator<2, 2, BlockVector<double>>(
-        {{{{K_inv, 0 * Ct}}, {{S_inv * C * K_inv, -1 * S_inv}}}});
-
-    // Initialize block structure
-    BlockVector<double> solution_block;
-    BlockVector<double> system_rhs_block;
-
-    AA.reinit_domain_vector(solution_block, false);
-    AA.reinit_range_vector(system_rhs_block, false);
-
-    solution_block.block(0) = solution;
-    solution_block.block(1) = lambda;
-
-    system_rhs_block.block(0) = embedding_rhs;
-    system_rhs_block.block(1) = embedded_rhs;
-
-    typename SolverGMRES<BlockVector<double>>::AdditionalData data;
-    data.force_re_orthogonalization = true;
-
-    SolverGMRES<BlockVector<double>> solver_gmres(schur_solver_control, data);
-
-    solver_gmres.solve(AA, solution_block, system_rhs_block, prec);
-
-    solution = solution_block.block(0);
-
-    constraints.distribute(solution);
-  }
-  // // GMRES with right upper triangular preconditioner
-  else if (std::strcmp(parameters.solver.c_str(), "GMRES_right") == 0) {
-    std::cout << "Solving with GMRES (right preconditioning)" << std::endl;
-    SparseDirectUMFPACK K_inv_umfpack;
-    K_inv_umfpack.initialize(stiffness_matrix);
-
-    auto K = linear_operator(stiffness_matrix);
-    auto Ct = linear_operator(coupling_matrix);
-    auto C = transpose_operator(Ct);
-    auto M = linear_operator(mass_matrix);
-    const auto Zero = M * 0.0;
-
-    auto K_inv = linear_operator(K, K_inv_umfpack);
-
-    auto S_inv = C * K * Ct + M;
-    // auto S_inv = C * K * Ct;
-
-    auto AA =
-        block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
-
-    auto prec = block_operator<2, 2, BlockVector<double>>(
-        {{{{K_inv, K_inv * Ct * S_inv}}, {{0 * C, -1 * S_inv}}}});
-
-    // Initialize block structure
-    BlockVector<double> solution_block;
-    BlockVector<double> system_rhs_block;
-
-    AA.reinit_domain_vector(solution_block, false);
-    AA.reinit_range_vector(system_rhs_block, false);
-
-    solution_block.block(0) = solution;
-    solution_block.block(1) = lambda;
-
-    system_rhs_block.block(0) = embedding_rhs;
-    system_rhs_block.block(1) = embedded_rhs;
-
-    typename SolverGMRES<BlockVector<double>>::AdditionalData data;
-    data.force_re_orthogonalization = true;
-    data.right_preconditioning = true;
-
-    SolverGMRES<BlockVector<double>> solver_gmres(schur_solver_control, data);
-
-    solver_gmres.solve(AA, solution_block, system_rhs_block, prec);
-
-    solution = solution_block.block(0);
-
-    constraints.distribute(solution);
-  }
-  // // FGMRES with right upper triangular preconditioner
-  else if (std::strcmp(parameters.solver.c_str(), "FGMRES") == 0) {
-    std::cout << "Solving with FGMRES" << std::endl;
-    SparseDirectUMFPACK K_inv_umfpack;
-    K_inv_umfpack.initialize(stiffness_matrix);
-
-    auto K = linear_operator(stiffness_matrix);
-    auto Ct = linear_operator(coupling_matrix);
-    auto C = transpose_operator(Ct);
-    auto M = linear_operator(mass_matrix);
-    const auto Zero = M * 0.0;
-
-    auto K_inv = linear_operator(K, K_inv_umfpack);
-
-    auto S_inv = C * K * Ct + M;
-    // auto S_inv = C * K * Ct;
-
-    auto AA =
-        block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
-
-    auto prec = block_operator<2, 2, BlockVector<double>>(
-        {{{{K_inv, K_inv * Ct * S_inv}}, {{0 * C, -1 * S_inv}}}});
-
-    // Initialize block structure
-    BlockVector<double> solution_block;
-    BlockVector<double> system_rhs_block;
-
-    AA.reinit_domain_vector(solution_block, false);
-    AA.reinit_range_vector(system_rhs_block, false);
-
-    solution_block.block(0) = solution;
-    solution_block.block(1) = lambda;
-
-    system_rhs_block.block(0) = embedding_rhs;
-    system_rhs_block.block(1) = embedded_rhs;
-
-    SolverFGMRES<BlockVector<double>> solver_fgmres(schur_solver_control);
-
-    solver_fgmres.solve(AA, solution_block, system_rhs_block, prec);
-
-    solution = solution_block.block(0);
-
-    constraints.distribute(solution);
-  }
-  // // GMRES with ELMAN right upper triangular preconditioner
-  else if (std::strcmp(parameters.solver.c_str(), "ELMAN_triang") == 0) {
+  } else if (std::strcmp(parameters.solver.c_str(), "ELMAN_triang") == 0) {
     std::cout << "Solving with ELMAN right-preconditioning" << std::endl;
 
     // SparseDirectUMFPACK K_inv_umfpack;
@@ -705,186 +564,6 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     solver_gmres.solve(AA, solution_block, system_rhs_block, prec_elman);
 
     solution = solution_block.block(0);
-
-    constraints.distribute(solution);
-  }  // // GMRES with scaled-BFBt right upper triangular preconditioner
-  else if (std::strcmp(parameters.solver.c_str(), "scaled-BFBt") == 0) {
-    std::cout << "Solving with scaled-BFBt right-preconditioning" << std::endl;
-    SparseDirectUMFPACK K_inv_umfpack;
-    K_inv_umfpack.initialize(stiffness_matrix);
-
-    auto K = linear_operator(stiffness_matrix);
-    auto Ct = linear_operator(coupling_matrix);
-    auto C = transpose_operator(Ct);
-    auto M = linear_operator(Mass_matrix);
-    auto mass = linear_operator(mass_matrix);
-    const auto Zero = M * 0.0;
-
-    // Inverse of the Diagonal mass matrix
-    Vector<double> diag_M;
-    diag_M.reinit(Mass_matrix.m());
-    for (unsigned int i = 0; i < Mass_matrix.m(); ++i)
-      diag_M(i) = 1.0 / Mass_matrix.diag_element(i);
-    DiagonalMatrix<Vector<double>> diag_mass_inv(diag_M);
-
-    // Inverse of the Diagonal stiffness matrix
-    Vector<double> diag_K;
-    diag_K.reinit(stiffness_matrix.m());
-    for (unsigned int i = 0; i < stiffness_matrix.m(); ++i)
-      diag_K(i) = 1.0 / stiffness_matrix.diag_element(i);
-    DiagonalMatrix<Vector<double>> diag_K_inv(diag_K);
-
-    // Inverse of the Lumped mass matrix
-    Vector<double> lumped_M;
-    Vector<double> ones;
-    lumped_M.reinit(Mass_matrix.m());
-    ones.reinit(Mass_matrix.m());
-    ones = 1.;
-    Mass_matrix.vmult(lumped_M, ones);
-    for (unsigned int i = 0; i < Mass_matrix.m(); ++i)
-      lumped_M(i) = 1.0 / lumped_M(i);
-    DiagonalMatrix<Vector<double>> lumped_Mass_matrix_inv(lumped_M);
-
-    // Inverse of the Immersed lumped mass matrix
-    Vector<double> lumped_m;
-    lumped_m.reinit(mass_matrix.m());
-    for (unsigned int i = 0; i < mass_matrix.m(); ++i) {
-      lumped_m(i) = 0.0;
-      for (auto it = mass_matrix.begin(i); it != mass_matrix.end(i); ++it)
-        lumped_m(i) += it->value();
-      lumped_m(i) = 1.0 / lumped_m(i);
-    }
-    DiagonalMatrix<Vector<double>> lumped_mass_matrix_inv(lumped_m);
-
-    auto M1_inv = linear_operator(lumped_Mass_matrix_inv);
-    auto M2_inv = linear_operator(lumped_Mass_matrix_inv);
-    auto M3_inv = linear_operator(lumped_mass_matrix_inv);
-
-    IterationNumberControl c_ct_solver_control(40, 1e-12, false, false);
-    auto C_Ct2 = C * Ct;
-    SolverCG<Vector<double>> solver_cg_c_ct(c_ct_solver_control);
-    auto C_Ct2_inv =
-        inverse_operator(C_Ct2, solver_cg_c_ct, PreconditionIdentity());
-
-    auto C_Ct1 = C * Ct;
-    auto C_Ct1_inv =
-        inverse_operator(C_Ct1, solver_cg_c_ct, PreconditionIdentity());
-
-    auto K_inv = linear_operator(K, K_inv_umfpack);
-
-    // auto S_inv = C_Ct2_inv * C * M2_inv * K * M2_inv * Ct * C_Ct2_inv;
-    auto S_inv = C_Ct2_inv * C * K * Ct * C_Ct2_inv;
-
-    // auto S_inv = M3_inv * C * M2_inv * K * M2_inv * Ct * M3_inv;
-
-    auto AA =
-        block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
-
-    auto prec_elman = block_operator<2, 2, BlockVector<double>>(
-        {{{{K_inv, K_inv * Ct * S_inv}}, {{0 * C, -1 * S_inv}}}});
-
-    // Initialize block structure
-    BlockVector<double> solution_block;
-    BlockVector<double> system_rhs_block;
-
-    AA.reinit_domain_vector(solution_block, false);
-    AA.reinit_range_vector(system_rhs_block, false);
-
-    solution_block.block(0) = solution;
-    solution_block.block(1) = lambda;
-
-    system_rhs_block.block(0) = embedding_rhs;
-    system_rhs_block.block(1) = embedded_rhs;
-
-    typename SolverGMRES<BlockVector<double>>::AdditionalData data;
-    data.force_re_orthogonalization = true;
-    data.right_preconditioning = true;
-
-    SolverGMRES<BlockVector<double>> solver_gmres(schur_solver_control, data);
-
-    solver_gmres.solve(AA, solution_block, system_rhs_block, prec_elman);
-
-    solution = solution_block.block(0);
-
-    constraints.distribute(solution);
-  }
-  // // GMRES with Juvigny diagonal preconditioner
-  else if (std::strcmp(parameters.solver.c_str(), "JUVIGNY") == 0) {
-    std::cout << "Solving with JUVIGNY diagonal-preconditioning" << std::endl;
-    SparseDirectUMFPACK K_inv_umfpack;
-    K_inv_umfpack.initialize(stiffness_matrix);
-
-    auto K = linear_operator(stiffness_matrix);
-    auto Ct = linear_operator(coupling_matrix);
-    auto C = transpose_operator(Ct);
-    auto M = linear_operator(mass_matrix);
-    const auto Zero = M * 0.0;
-
-    auto K_inv = linear_operator(K, K_inv_umfpack);
-
-    auto S_inv = C * K * Ct;
-
-    auto AA =
-        block_operator<2, 2, BlockVector<double>>({{{{K, Ct}}, {{C, Zero}}}});
-
-    auto prec_diag = block_operator<2, 2, BlockVector<double>>(
-        {{{{K_inv, 0 * C}}, {{0 * Ct, S_inv}}}});
-
-    // Initialize block structure
-    BlockVector<double> solution_block;
-    BlockVector<double> system_rhs_block;
-
-    AA.reinit_domain_vector(solution_block, false);
-    AA.reinit_range_vector(system_rhs_block, false);
-
-    solution_block.block(0) = solution;
-    solution_block.block(1) = lambda;
-
-    system_rhs_block.block(0) = embedding_rhs;
-    system_rhs_block.block(1) = embedded_rhs;
-
-    typename SolverGMRES<BlockVector<double>>::AdditionalData data;
-    data.force_re_orthogonalization = true;
-    data.right_preconditioning = false;
-
-    SolverGMRES<BlockVector<double>> solver_gmres(schur_solver_control, data);
-
-    solver_gmres.solve(AA, solution_block, system_rhs_block, prec_diag);
-
-    solution = solution_block.block(0);
-
-    constraints.distribute(solution);
-  }
-  // Michal Preconditioner
-  else if (std::strcmp(parameters.solver.c_str(), "MICHAL") == 0) {
-    std::cout << "Solving with MICHAL preconditioner" << std::endl;
-    SparseDirectUMFPACK K_inv_umfpack;
-    K_inv_umfpack.initialize(stiffness_matrix);
-
-    auto K = linear_operator(stiffness_matrix);
-    auto Ct = linear_operator(coupling_matrix);
-    auto C = transpose_operator(Ct);
-    auto MassS = linear_operator(mass_matrix);
-
-    auto K_inv = linear_operator(K, K_inv_umfpack);
-
-    auto S_inv_prec = C * K * Ct + MassS;
-
-    auto S = C * K_inv * Ct;
-    SolverCG<Vector<double>> solver_cg(schur_solver_control);
-
-    PrimitiveVectorMemory<Vector<double>> mem;
-    SolverGMRES<Vector<double>> solver_gmres(
-        schur_solver_control, mem,
-        SolverGMRES<Vector<double>>::AdditionalData(20));
-    SolverMinRes<Vector<double>> solver_minres(schur_solver_control);
-
-    auto S_inv = inverse_operator(S, solver_minres,
-                                  /* PreconditionIdentity() */ S_inv_prec);
-
-    lambda = S_inv * (C * K_inv * embedding_rhs - embedded_rhs);
-
-    solution = K_inv * (embedding_rhs - Ct * lambda);
 
     constraints.distribute(solution);
   } else if (std::strcmp(parameters.solver.c_str(), "rational") == 0) {
@@ -949,25 +628,6 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     SparseDirectUMFPACK M_inv_umfpack;
     M_inv_umfpack.initialize(mass_matrix);
 
-    // Inverse of the Immersed lumped mass matrix
-    // Vector<double> lumped_m;
-    // lumped_m.reinit(mass_matrix.m());
-    // for (unsigned int i = 0; i < mass_matrix.m(); ++i) {
-    // lumped_m(i) = 0.0;
-    // for (auto it = mass_matrix.begin(i); it != mass_matrix.end(i); ++it)
-    // lumped_m(i) += it->value();
-    // lumped_m(i) = 1.0 / lumped_m(i);
-    //}
-    // DiagonalMatrix<Vector<double>> lumped_mass_matrix_inv(lumped_m);
-    // auto invW1 = linear_operator(lumped_mass_matrix_inv);
-
-    // const double h_immersed = GridTools::minimal_cell_diameter(*space_grid);
-    // const double gamma = 1e2 / h_immersed;
-    // auto invW = linear_operator(mass_matrix, M_inv_umfpack);
-    // auto Aug = K + gamma * Ct * invW * C;
-
-    // IdentityMatrix W(mass_matrix.m());
-    // auto invW = linear_operator(W);
     const double gamma = 10;
     export_to_matlab_csv(stiffness_matrix, "A.csv");
 #ifdef DEAL_II_WITH_TRILINOS
@@ -1246,17 +906,6 @@ void DistributedLagrangeProblem<dim, spacedim>::output_results() {
     std::cerr << "***BBt solve not successfull (see condition number above)***"
               << std::endl;
   }
-
-  // Vector<double> u(lambda);
-  // u = 0.;
-  // Vector<double> f(lambda);
-  // f = 1.;
-  // PreconditionIdentity prec_no;
-  // auto                 M   = linear_operator(mass_matrix);
-  // auto                 Mt  = transpose_operator(M);
-  // auto                 MMt = M * Mt;
-  // // auto                 K  = linear_operator(stiffness_matrix);
-  // solver_cg.solve(MMt, u, f, prec_no);
 }
 
 template <int dim, int spacedim>
@@ -1290,13 +939,13 @@ void DistributedLagrangeProblem<dim, spacedim>::run() {
   output_results();
   export_results_to_csv_file();
 }
-}  // namespace Step60
+}  // namespace ImmersedLaplaceSolver
 
 int main(int argc, char **argv) {
   try {
     Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
     using namespace dealii;
-    using namespace Step60;
+    using namespace ImmersedLaplaceSolver;
 
     const unsigned int dim = 1, spacedim = 2;
 
