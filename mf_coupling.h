@@ -9,9 +9,7 @@
 #include <deal.II/matrix_free/matrix_free.h>
 
 #ifdef DEAL_II_WITH_TRILINOS
-#include <deal.II/lac/sparsity_pattern.h>
-#include <deal.II/lac/trilinos_sparse_matrix.h>
-#include <deal.II/lac/trilinos_sparsity_pattern.h>
+#include <deal.II/lac/trilinos_vector.h>
 #endif
 
 #include <deal.II/base/mpi_remote_point_evaluation.h>
@@ -27,10 +25,14 @@ public:
   //[TODO @fdrmrc] Add update flags for the matrix-free object.
   struct AdditionalData {
   public:
-    AdditionalData(const unsigned int rtree_level = 0, double tolerance = 1e-12)
-        : rtree_level(rtree_level), tolerance(tolerance) {}
+    AdditionalData(
+        const unsigned int rtree_level = 0, double tolerance = 1e-12,
+        const std::function<std::vector<bool>()> &marked_vertices_ = {})
+        : rtree_level(rtree_level), tolerance(tolerance),
+          marked_vertices(marked_vertices_) {}
     unsigned int rtree_level;
     double tolerance;
+    std::function<std::vector<bool>()> marked_vertices;
   };
 
   CouplingEvaluator(const DoFHandler<dim> *fluid_dh,
@@ -106,7 +108,8 @@ CouplingEvaluator<dim, fe_degree, n_q_points_1d, n_components, Number,
 
   remote_point_evaluator =
       std::make_unique<Utilities::MPI::RemotePointEvaluation<dim>>(
-          rpe_data.rtree_level, rpe_data.tolerance);
+          rpe_data.tolerance, false /*enforce_unique_mapping*/,
+          rpe_data.rtree_level, rpe_data.marked_vertices);
 
   typename MatrixFree<dim, Number>::AdditionalData additional_data;
   additional_data.tasks_parallel_scheme =
