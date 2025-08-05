@@ -12,7 +12,7 @@
 using namespace dealii;
 
 class BlockPreconditionerAugmentedLagrangian {
- public:
+public:
   BlockPreconditionerAugmentedLagrangian(
       const LinearOperator<Vector<double>> Aug_inv_,
       const LinearOperator<Vector<double>> C_,
@@ -42,7 +42,7 @@ class BlockPreconditionerAugmentedLagrangian {
 };
 
 class BlockPreconditionerAugmentedLagrangianStokes {
- public:
+public:
   BlockPreconditionerAugmentedLagrangianStokes(
       const LinearOperator<Vector<double>> Aug_inv_,
       const LinearOperator<Vector<double>> Bt_,
@@ -78,11 +78,42 @@ class BlockPreconditionerAugmentedLagrangianStokes {
   double gamma_grad_div;
 };
 
+class BlockPreconditionerAugmentedLagrangianDiagonal {
+public:
+  BlockPreconditionerAugmentedLagrangianDiagonal(
+      const LinearOperator<Vector<double>> Aug_inv_,
+      const LinearOperator<Vector<double>> invW_,
+      const LinearOperator<Vector<double>> Mp_inv_, const double gamma_,
+      const double gamma_grad_div_) {
+    Aug_inv = Aug_inv_;
+    invW = invW_;
+    Mp_inv = Mp_inv_;
+    gamma = gamma_;
+    gamma_grad_div = gamma_grad_div_;
+  }
+
+  void vmult(BlockVector<double> &v, const BlockVector<double> &u) const {
+    v.block(0) = 0.;
+    v.block(1) = 0.;
+    v.block(2) = 0.;
+
+    v.block(2) = gamma * invW * u.block(2);
+    v.block(1) = gamma_grad_div * Mp_inv * u.block(1);
+    v.block(0) = Aug_inv * u.block(0);
+  }
+
+  LinearOperator<Vector<double>> Aug_inv;
+  LinearOperator<Vector<double>> invW;
+  LinearOperator<Vector<double>> Mp_inv;
+  double gamma;
+  double gamma_grad_div;
+};
+
 namespace EllipticInterfacePreconditioners {
 
 // Original AL preconditioner
 class BlockTriangularALPreconditioner {
- public:
+public:
   BlockTriangularALPreconditioner(
       const LinearOperator<BlockVector<double>> Aug_inv_,
       const LinearOperator<Vector<double>> C_,
@@ -135,7 +166,7 @@ class BlockTriangularALPreconditioner {
 // Implementation of the modified AL preconditioner for elliptic interface
 // problem. Notice how we need the inverse of the diagonal blocks.
 class BlockTriangularALPreconditionerModified {
- public:
+public:
   BlockTriangularALPreconditionerModified(
       const LinearOperator<Vector<double>> C_,
       const LinearOperator<Vector<double>> M_,
@@ -205,6 +236,6 @@ class BlockTriangularALPreconditionerModified {
   LinearOperator<Vector<double>> invW;
   double gamma;
 };
-}  // namespace EllipticInterfacePreconditioners
+} // namespace EllipticInterfacePreconditioners
 
 #endif

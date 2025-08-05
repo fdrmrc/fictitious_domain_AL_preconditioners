@@ -161,6 +161,7 @@ struct ALControl {
   double tol_AL;
   unsigned int max_iterations_AL;
   bool log_result;
+  bool diagonal_spd_prec;
 
   void declare_parameters(ParameterHandler &param) {
     param.declare_entry("Gamma", "10", Patterns::Double());
@@ -172,6 +173,8 @@ struct ALControl {
                         Patterns::Double());
     param.declare_entry("Max steps", "100", Patterns::Integer());
     param.declare_entry("Log result", "true", Patterns::Bool());
+    param.declare_entry("Diagonal SPD preconditioner", "false",
+                        Patterns::Bool());
   }
   void parse_parameters(ParameterHandler &param) {
     gamma = param.get_double("Gamma");
@@ -181,6 +184,7 @@ struct ALControl {
     AMG_preconditioner_augmented = param.get_bool("AMG for augmented block");
     tol_AL = param.get_double("Tolerance for Augmented Lagrangian");
     log_result = param.get_bool("Log result");
+    diagonal_spd_prec = param.get_bool("Diagonal SPD preconditioner");
     max_iterations_AL = param.get_integer("Max steps");
   }
 };
@@ -1049,13 +1053,26 @@ template <int dim, int spacedim> void IBStokesProblem<dim, spacedim>::solve() {
       AssertThrow(false, ExcNotImplemented());
     }
 
-    SolverFGMRES<BlockVector<double>> solver_fgmres(outer_solver_control);
+    if (augmented_lagrangian_control.diagonal_spd_prec == true) {
+      SolverMinRes<BlockVector<double>> solver_minres(outer_solver_control);
 
-    BlockPreconditionerAugmentedLagrangianStokes
-        augmented_lagrangian_preconditioner_Stokes{
-            Aug_inv, Bt, Ct, invW, Mp_inv, gamma, gamma_grad_div};
-    solver_fgmres.solve(AA, solution_block, system_rhs_block,
-                        augmented_lagrangian_preconditioner_Stokes);
+      BlockPreconditionerAugmentedLagrangianDiagonal
+          augmented_lagrangian_preconditioner_spd{Aug_inv, invW, Mp_inv, gamma,
+                                                  gamma_grad_div};
+
+      solver_minres.solve(AA, solution_block, system_rhs_block,
+                          augmented_lagrangian_preconditioner_spd);
+    } else {
+
+      SolverFGMRES<BlockVector<double>> solver_fgmres(outer_solver_control);
+
+      BlockPreconditionerAugmentedLagrangianStokes
+          augmented_lagrangian_preconditioner_Stokes{
+              Aug_inv, Bt, Ct, invW, Mp_inv, gamma, gamma_grad_div};
+
+      solver_fgmres.solve(AA, solution_block, system_rhs_block,
+                          augmented_lagrangian_preconditioner_Stokes);
+    }
 
     solution.block(0) = solution_block.block(0);
     solution.block(1) = solution_block.block(1);
