@@ -70,27 +70,24 @@ namespace IBStokes {
 
 using namespace dealii;
 
-template <int dim>
-struct InnerPreconditioner;
+template <int dim> struct InnerPreconditioner;
 
-template <>
-struct InnerPreconditioner<2> {
+template <> struct InnerPreconditioner<2> {
   using type = SparseDirectUMFPACK;
 };
 
-template <>
-struct InnerPreconditioner<3> {
+template <> struct InnerPreconditioner<3> {
   using type = SparseILU<double>;
 };
 
 template <class MatrixType, class PreconditionerType>
 class InverseMatrix : public Subscriptor {
- public:
+public:
   InverseMatrix(const MatrixType &m, const PreconditionerType &preconditioner);
 
   void vmult(Vector<double> &dst, const Vector<double> &src) const;
 
- private:
+private:
   const SmartPointer<const MatrixType> matrix;
   const SmartPointer<const PreconditionerType> preconditioner;
 };
@@ -111,16 +108,15 @@ void InverseMatrix<MatrixType, PreconditionerType>::vmult(
   cg.solve(*matrix, dst, src, *preconditioner);
 }
 
-template <class PreconditionerType>
-class SchurComplement : public Subscriptor {
- public:
+template <class PreconditionerType> class SchurComplement : public Subscriptor {
+public:
   SchurComplement(
       const BlockSparseMatrix<double> &system_matrix,
       const InverseMatrix<SparseMatrix<double>, PreconditionerType> &A_inverse);
 
   void vmult(Vector<double> &dst, const Vector<double> &src) const;
 
- private:
+private:
   const SmartPointer<const BlockSparseMatrix<double>> system_matrix;
   const SmartPointer<
       const InverseMatrix<SparseMatrix<double>, PreconditionerType>>
@@ -133,10 +129,9 @@ template <class PreconditionerType>
 SchurComplement<PreconditionerType>::SchurComplement(
     const BlockSparseMatrix<double> &system_matrix,
     const InverseMatrix<SparseMatrix<double>, PreconditionerType> &A_inverse)
-    : system_matrix(&system_matrix),
-      A_inverse(&A_inverse),
-      tmp1(system_matrix.block(0, 0).m()),
-      tmp2(system_matrix.block(0, 0).m()) {}
+    : system_matrix(&system_matrix), A_inverse(&A_inverse),
+      tmp1(system_matrix.block(0, 0).m()), tmp2(system_matrix.block(0, 0).m()) {
+}
 
 template <class PreconditionerType>
 void SchurComplement<PreconditionerType>::vmult(
@@ -155,14 +150,14 @@ struct ResultsData {
 
 // Struct to pipe parameters to the AL solver.
 struct ALControl {
-  double gamma;  // gamma parameter for the augmented lagrangian formulation
-  double gamma_grad_div;        // gamma parameter for grad-div stabilization
-  bool grad_div_stabilization;  // true if you want to assemble grad-div
-                                // stabilization
-  bool inverse_diag_square;     // true if you want to use the inverse diagonal
-                                // squared (immersed)
-  bool AMG_preconditioner_augmented;  // true if you want to build AMG
-                                      // preconditioner for augmented block
+  double gamma; // gamma parameter for the augmented lagrangian formulation
+  double gamma_grad_div;       // gamma parameter for grad-div stabilization
+  bool grad_div_stabilization; // true if you want to assemble grad-div
+                               // stabilization
+  bool inverse_diag_square;    // true if you want to use the inverse diagonal
+                               // squared (immersed)
+  bool AMG_preconditioner_augmented; // true if you want to build AMG
+                                     // preconditioner for augmented block
   double tol_AL;
   unsigned int max_iterations_AL;
   bool log_result;
@@ -190,11 +185,10 @@ struct ALControl {
   }
 };
 
-template <int dim, int spacedim = dim>
-class IBStokesProblem {
- public:
+template <int dim, int spacedim = dim> class IBStokesProblem {
+public:
   class Parameters : public ParameterAcceptor {
-   public:
+  public:
     Parameters();
 
     unsigned int initial_refinement = 6;
@@ -206,12 +200,12 @@ class IBStokesProblem {
     std::list<types::boundary_id> dirichlet_ids{0, 1, 2, 3};
 
     unsigned int velocity_finite_element_degree =
-        2;  // Pressure will be 1 (Taylor-Hood pair), or Q2-P1_disc (see next
-            // parameter)
+        2; // Pressure will be 1 (Taylor-Hood pair), or Q2-P1_disc (see next
+           // parameter)
 
-    bool use_disc_pressure = false;  // by default, we use Taylor-Hood
+    bool use_disc_pressure = false; // by default, we use Taylor-Hood
 
-    unsigned int embedded_space_finite_element_degree = 1;  // multiplier space
+    unsigned int embedded_space_finite_element_degree = 1; // multiplier space
 
     unsigned int embedded_configuration_finite_element_degree = 1;
 
@@ -231,7 +225,7 @@ class IBStokesProblem {
 
   void set_filename(const std::string &filename);
 
- private:
+private:
   const Parameters &parameters;
 
   void setup_grids_and_dofs();
@@ -534,8 +528,8 @@ void IBStokesProblem<dim, spacedim>::setup_background_dofs() {
   velocity_dh->distribute_dofs(*velocity_fe);
   DoFRenumbering::Cuthill_McKee(*space_dh);
   DoFRenumbering::Cuthill_McKee(
-      *velocity_dh);  // we need to renumber in the same way we renumbered DoFs
-                      // for velocity
+      *velocity_dh); // we need to renumber in the same way we renumbered DoFs
+                     // for velocity
 
   A_preconditioner.reset();
   std::vector<unsigned int> block_component(spacedim + 1, 0);
@@ -616,7 +610,7 @@ void IBStokesProblem<dim, spacedim>::setup_background_dofs() {
   DynamicSparsityPattern mass_dsp(embedded_dh->n_dofs(), embedded_dh->n_dofs());
   DoFTools::make_sparsity_pattern(*embedded_dh, mass_dsp);
   mass_sparsity.copy_from(mass_dsp);
-  mass_matrix_immersed.reinit(mass_sparsity);  // M_immersed
+  mass_matrix_immersed.reinit(mass_sparsity); // M_immersed
 
   // Initialize vectors
   solution.reinit(dofs_per_block);
@@ -726,23 +720,23 @@ void IBStokesProblem<dim, spacedim>::assemble_stokes() {
           if (augmented_lagrangian_control.grad_div_stabilization == true) {
             local_matrix(i, j) +=
                 (1. * scalar_product(grad_phi_u[i],
-                                     grad_phi_u[j])  // symgrad-symgrad
-                 - div_phi_u[i] * phi_p[j]           // div u_i p_j
-                 - phi_p[i] * div_phi_u[j]           // p_i div u_j
+                                     grad_phi_u[j]) // symgrad-symgrad
+                 - div_phi_u[i] * phi_p[j]          // div u_i p_j
+                 - phi_p[i] * div_phi_u[j]          // p_i div u_j
                  + augmented_lagrangian_control.gamma_grad_div * div_phi_u[i] *
-                       div_phi_u[j]) *  // grad-div stabilization
+                       div_phi_u[j]) * // grad-div stabilization
                 fe_values.JxW(q);
           } else {
             // no grad-div stabilization, usual formulation
             local_matrix(i, j) +=
-                (2 * (symgrad_phi_u[i] * symgrad_phi_u[j])  // symgrad-symgrad
-                 - div_phi_u[i] * phi_p[j]                  // div u_i p_j
-                 - phi_p[i] * div_phi_u[j]) *               // p_i div u_j
+                (2 * (symgrad_phi_u[i] * symgrad_phi_u[j]) // symgrad-symgrad
+                 - div_phi_u[i] * phi_p[j]                 // div u_i p_j
+                 - phi_p[i] * div_phi_u[j]) *              // p_i div u_j
                 fe_values.JxW(q);
           }
 
           local_preconditioner_matrix(i, j) +=
-              (phi_p[i] * phi_p[j]) * fe_values.JxW(q);  // p_i p_j
+              (phi_p[i] * phi_p[j]) * fe_values.JxW(q); // p_i p_j
         }
 
         // local_rhs(i) += phi_u[i] * rhs_values[q] * fe_values.JxW(q);
@@ -825,8 +819,7 @@ void output_double_number(double input, const std::string &text) {
   std::cout << text << input << std::endl;
 }
 
-template <int dim, int spacedim>
-void IBStokesProblem<dim, spacedim>::solve() {
+template <int dim, int spacedim> void IBStokesProblem<dim, spacedim>::solve() {
   TimerOutput::Scope timer_section(monitor, "Solve system");
 
   // Stokes Only
@@ -949,9 +942,10 @@ void IBStokesProblem<dim, spacedim>::solve() {
       Vector<double> ones(n_cols_Mp);
       ones = 1.;
       preconditioner_matrix.block(1, 1).vmult(pressure_diagonal_inv,
-                                              ones);  // M_p*1
+                                              ones); // M_p*1
 
-      for (double &x : pressure_diagonal_inv) x = 1. / x;
+      for (double &x : pressure_diagonal_inv)
+        x = 1. / x;
 
       diag_inverse_pressure_matrix.reinit(pressure_diagonal_inv);
       // Mp_inv = linear_operator(diag_inverse_pressure_matrix);
@@ -1002,12 +996,12 @@ void IBStokesProblem<dim, spacedim>::solve() {
     auto AA = block_operator<3, 3, BlockVector<double>>(
         {{{{Aug, Bt, Ct}},
           {{B, Zero, Zero}},
-          {{C, Zero, Zero}}}});  //! Augmented the (1,1) block
+          {{C, Zero, Zero}}}}); //! Augmented the (1,1) block
     AA.reinit_domain_vector(solution_block, false);
     AA.reinit_range_vector(system_rhs_block, false);
 
-    solution_block.block(0) = solution.block(0);  // velocity
-    solution_block.block(1) = solution.block(1);  // pressure
+    solution_block.block(0) = solution.block(0); // velocity
+    solution_block.block(1) = solution.block(1); // pressure
     solution_block.block(2) = lambda;
 
     // lagrangian term
@@ -1015,7 +1009,7 @@ void IBStokesProblem<dim, spacedim>::solve() {
     tmp.reinit(stokes_rhs.block(0).size());
     tmp = gamma * Ct * invW * embedded_rhs;
     system_rhs_block.block(0) = stokes_rhs.block(0);
-    system_rhs_block.block(0).add(1., tmp);  // ! augmented
+    system_rhs_block.block(0).add(1., tmp); // ! augmented
     system_rhs_block.block(1) = stokes_rhs.block(1);
     system_rhs_block.block(2) = embedded_rhs;
 
@@ -1027,12 +1021,12 @@ void IBStokesProblem<dim, spacedim>::solve() {
 
     auto Aug_inv = null_operator(A);
     TrilinosWrappers::PreconditionAMG
-        prec_amg_aug;  // will be initialized only if selected
+        prec_amg_aug; // will be initialized only if selected
 
     if (augmented_lagrangian_control.AMG_preconditioner_augmented == true &&
         augmented_lagrangian_control.grad_div_stabilization == true) {
       Vector<double> inverse_squares_multiplier(
-          mass_matrix_immersed.m());  // M^{-2}
+          mass_matrix_immersed.m()); // M^{-2}
 
       for (types::global_dof_index i = 0; i < mass_matrix_immersed.m(); ++i)
         inverse_squares_multiplier(i) =
@@ -1087,7 +1081,7 @@ void IBStokesProblem<dim, spacedim>::output_results() {
   Q *= -1. / augmented_lagrangian_control.gamma_grad_div;
   export_to_matlab_csv(Q, "Q_stokes_approx.csv");
 
-  Vector<double> squares_multiplier(mass_matrix_immersed.m());  // -M^{2}/gamma
+  Vector<double> squares_multiplier(mass_matrix_immersed.m()); // -M^{2}/gamma
   for (types::global_dof_index i = 0; i < mass_matrix_immersed.m(); ++i)
     squares_multiplier(i) = mass_matrix_immersed.diag_element(i) *
                             mass_matrix_immersed.diag_element(i) *
@@ -1177,7 +1171,7 @@ void IBStokesProblem<dim, spacedim>::export_results_to_csv_file() {
               ExcMessage("You must set the name of the parameter file."));
   std::filesystem::path p(parameters_filename);
   myfile.open(p.stem().string() + ".csv",
-              std::ios::app);  // get the filename and add proper extension
+              std::ios::app); // get the filename and add proper extension
 
   myfile << results_data.dofs_background << "," << results_data.dofs_immersed
          << "," << results_data.outer_iterations << "\n";
@@ -1185,8 +1179,7 @@ void IBStokesProblem<dim, spacedim>::export_results_to_csv_file() {
   myfile.close();
 }
 
-template <int dim, int spacedim>
-void IBStokesProblem<dim, spacedim>::run() {
+template <int dim, int spacedim> void IBStokesProblem<dim, spacedim>::run() {
   AssertThrow(parameters.initialized, ExcNotInitialized());
   deallog.depth_console(parameters.verbosity_level);
 
@@ -1197,7 +1190,7 @@ void IBStokesProblem<dim, spacedim>::run() {
   output_results();
   // export_results_to_csv_file();
 }
-}  // namespace IBStokes
+} // namespace IBStokes
 
 int main(int argc, char **argv) {
   try {
