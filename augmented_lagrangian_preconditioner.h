@@ -12,7 +12,7 @@
 using namespace dealii;
 
 class BlockPreconditionerAugmentedLagrangian {
- public:
+public:
   BlockPreconditionerAugmentedLagrangian(
       const LinearOperator<Vector<double>> Aug_inv_,
       const LinearOperator<Vector<double>> C_,
@@ -42,7 +42,7 @@ class BlockPreconditionerAugmentedLagrangian {
 };
 
 class BlockPreconditionerAugmentedLagrangianStokes {
- public:
+public:
   BlockPreconditionerAugmentedLagrangianStokes(
       const LinearOperator<Vector<double>> Aug_inv_,
       const LinearOperator<Vector<double>> Bt_,
@@ -82,7 +82,7 @@ namespace EllipticInterfacePreconditioners {
 
 // Original AL preconditioner
 class BlockTriangularALPreconditioner {
- public:
+public:
   BlockTriangularALPreconditioner(
       const LinearOperator<BlockVector<double>> Aug_inv_,
       const LinearOperator<Vector<double>> C_,
@@ -135,10 +135,10 @@ class BlockTriangularALPreconditioner {
 // Implementation of the modified AL preconditioner for elliptic interface
 // problem. Notice how we need the inverse of the diagonal blocks.
 class BlockTriangularALPreconditionerModified {
- public:
+public:
   BlockTriangularALPreconditionerModified(
       const LinearOperator<Vector<double>> C_,
-      const LinearOperator<Vector<double>> M_,
+      const LinearOperator<Vector<double>> C2_,
       const LinearOperator<Vector<double>> invW_, const double gamma_,
       const LinearOperator<Vector<double>> A11_inv_,
       const LinearOperator<Vector<double>> A22_inv_) {
@@ -146,7 +146,8 @@ class BlockTriangularALPreconditionerModified {
     A22_inv = A22_inv_;
     C = C_;
     Ct = transpose_operator(C);
-    M = M_;
+    C2 = C2_;
+    C2t = transpose_operator(C2);
     invW = invW_;
     gamma = gamma_;
   }
@@ -162,38 +163,9 @@ class BlockTriangularALPreconditionerModified {
     const auto &u2 = src.block(1);
     const auto &lambda = src.block(2);
 
-    // // // Create temporary vectors for intermediate results
-    // typename BlockVectorType::BlockType temp(lambda.size());
-
-    // // 1. Compute the third block first (1st inverse application: invW)
-    // dst.block(2) = invW * lambda;
-    // dst.block(2) *= -gamma;
-
-    // // Prepare for the second block calculation
-    // temp = M * (-1.0 / gamma * dst.block(2));  // M * invW * lambda
-
-    // // 2. Compute the second block (2nd inverse application: A22_inv)
-    // // A22_inv * (u2 - gamma * M * invW * lambda)
-    // temp *= -gamma;
-    // temp += u2;
-    // dst.block(1) = A22_inv * temp;
-
-    // // Prepare for the first block calculation
-    // auto B_T = -gamma * Ct * invW * M;
-    // temp = B_T * dst.block(1);  // B_T * A22_inv * (...)
-    // temp *= -1.0;
-    // temp += u;
-
-    // // Add the term with Ct
-    // auto C_T_term = Ct * (-1.0 / gamma * dst.block(2));  // Ct * invW *
-    // lambda temp += gamma * C_T_term;
-
-    // // 3. Compute the first block (3rd inverse application: A11_inv)
-    // dst.block(0) = A11_inv * temp;
-
     dst.block(2) = -gamma * invW * lambda;
-    dst.block(1) = A22_inv * (u2 + M * dst.block(2));
-    dst.block(0) = A11_inv * (u + gamma * Ct * invW * M * dst.block(1) -
+    dst.block(1) = A22_inv * (u2 + C2t * dst.block(2));
+    dst.block(0) = A11_inv * (u + gamma * Ct * invW * C2 * dst.block(1) -
                               Ct * dst.block(2));
   }
 
@@ -201,10 +173,11 @@ class BlockTriangularALPreconditionerModified {
   LinearOperator<Vector<double>> A22_inv;
   LinearOperator<Vector<double>> C;
   LinearOperator<Vector<double>> Ct;
-  LinearOperator<Vector<double>> M;
+  LinearOperator<Vector<double>> C2;
+  LinearOperator<Vector<double>> C2t;
   LinearOperator<Vector<double>> invW;
   double gamma;
 };
-}  // namespace EllipticInterfacePreconditioners
+} // namespace EllipticInterfacePreconditioners
 
 #endif

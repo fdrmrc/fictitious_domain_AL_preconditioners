@@ -2,19 +2,22 @@
 # ---------------------
 subsection Elliptic Interface Problem
 set Beta_1                             = 1
-set Beta_2                             = 1e3
+set Beta_2                             = 1e7
 set Coupling quadrature order          = 3
 set Export matrices for eigs-analysis  = false
 set FE degree background               = 1
 set FE degree immersed                 = 1
+set FE degree multiplier               = 1
+set Use discontinuous multiplier       = false
+set Use bubbles                        = false
 set Homogeneous Dirichlet boundary ids = 0, 1, 2, 3
 set Output directory                   = .
  # Using analytical solution for immersed circle (f = f_2 = 1)
 set Perform convergence study          = false
  # Check condition number of C*Ct after solve().
-set Perform sanity checks              = true
+set Perform sanity checks              = false
 # Perform fixed number of iterations within inner solvers.
-set Use fixed (inner) iterations       = true
+set Use fixed (inner) iterations       = false
 
   subsection Right hand side f_1
 set Function constants  =
@@ -52,17 +55,17 @@ set gamma solid                    = 1e-2
   subsection Grid generation
 set Background grid generator           = hyper_cube
 set Background grid generator arguments = -1: 1: true
-set Immersed grid generator             = hyper_cube
-set Immersed grid generator arguments   = -0.14: 0.44: true
+set Immersed grid generator             = hyper_cube#hyper_ball#
+set Immersed grid generator arguments   = -0.14: 0.44: true#0.,0. : 0.22 : true#
   end
 
   subsection Inner solver control
 set Log frequency = 1
 set Log history   = false
 set Log result    = true
-set Max steps     = 1000   # default: 100
+set Max steps     = 10000   # default: 100
 set Reduction     = 1.e-20 # default: 1.e-2
-set Tolerance     = 1.e-4  # default: 1.e-10
+set Tolerance     = 1.e-2  # default: 1.e-10
   end
 
    subsection Iteration number control
@@ -77,8 +80,8 @@ set Tolerance        = 1.e-4  # default: 1.e-10
 set Log frequency = 1
 set Log history   = true   # default: false
 set Log result    = true
-set Max steps     = 1000   # default: 100
-set Reduction     = 1.e-20 # default: 1.e-2
+set Max steps     = 100   # default: 100
+set Reduction     = 1.e-10 # default: 1.e-2
 set Tolerance     = 1.e-10  # default: 1.e-10
   end
 
@@ -99,10 +102,10 @@ set Stop gamma      = 1
 set Initial background refinement = 4
 
    # Initial number of refinements used for the immersed domain Gamma.
-set Initial immersed refinement   = 2
+set Initial immersed refinement   = 2#0
 
    # Number of refinement cycles to perform convergence studies.
-set Refinemented cycles           = 5
+set Refinemented cycles           = 8
   end
 
 end
