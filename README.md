@@ -3,8 +3,21 @@
 This repository contains application codes demonstrating *Augmented-Lagrangian*-based preconditioners for Fictitious Domain-type solvers. They
 are based on the [deal.II library](https://www.dealii.org). All problems are meant to run both in 2D and 3D.
 
-The associated preprint can be found online on [arXiv](https://arxiv.org/abs/2504.11339).
 
+If you use this code in your research, please cite: [*Scalable augmented Lagrangian preconditioners for fictitious domain problems*](https://www.sciencedirect.com/science/article/pii/S0045782525007947)
+```
+@article{BENZI2026118522,
+title = {Scalable augmented Lagrangian preconditioners for fictitious domain problems},
+journal = {Computer Methods in Applied Mechanics and Engineering},
+volume = {450},
+pages = {118522},
+year = {2026},
+issn = {0045-7825},
+doi = {10.1016/j.cma.2025.118522},
+author = {Michele Benzi and Marco Feder and Luca Heltai and Federica Mugnaioni},
+keywords = {Preconditioning, Iterative solvers, Fictitious domain method, Non-matching meshes, Finite element method}
+}
+```
 
 
 ## Prerequisites
