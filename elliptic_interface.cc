@@ -54,14 +54,14 @@
 using namespace dealii;
 
 // Analytical solution taken from https://arxiv.org/pdf/2211.03443
-template <int dim>
-class Solution : public Function<dim> {
- public:
+template <int dim> class Solution : public Function<dim> {
+public:
   virtual double value(const Point<dim> &p,
                        const unsigned int component = 0) const override;
 
-  virtual Tensor<1, dim> gradient(
-      const Point<dim> &p, const unsigned int component = 0) const override;
+  virtual Tensor<1, dim>
+  gradient(const Point<dim> &p,
+           const unsigned int component = 0) const override;
 };
 
 template <int dim>
@@ -71,7 +71,7 @@ double Solution<dim>::value(const Point<dim> &p, const unsigned int) const {
   auto r = p.norm();
   const double coefficient_omega = 1.;
   const double coefficient_omega2 = 10.;
-  if (r <= 1)  // inside domain omega2
+  if (r <= 1) // inside domain omega2
   {
     return_value = (3. * coefficient_omega2 / coefficient_omega + 1. - r * r) /
                    (2. * dim * coefficient_omega2);
@@ -102,9 +102,8 @@ Tensor<1, dim> Solution<dim>::gradient(const Point<dim> &p,
 }
 
 // define boundary values to be the exact solution itself
-template <int dim>
-class BoundaryValues : public Function<dim> {
- public:
+template <int dim> class BoundaryValues : public Function<dim> {
+public:
   virtual double value(const Point<dim> &p,
                        const unsigned int component = 0) const override;
 };
@@ -115,9 +114,8 @@ double BoundaryValues<dim>::value(const Point<dim> &p,
   return (4. - p[0] * p[0] - p[1] * p[1]) / 4.;
 }
 
-template <int dim>
-class ProblemParameters : public ParameterAcceptor {
- public:
+template <int dim> class ProblemParameters : public ParameterAcceptor {
+public:
   ProblemParameters();
 
   std::string output_directory = ".";
@@ -198,8 +196,7 @@ ProblemParameters<dim>::ProblemParameters()
       outer_solver_control("Outer solver control"),
       inner_solver_control("Inner solver control"),
       iteration_number_control("Iteration number control"),
-      f_1("Right hand side f_1"),
-      f_2_minus_f("Right hand side f_2 - f") {
+      f_1("Right hand side f_1"), f_2_minus_f("Right hand side f_2 - f") {
   add_parameter("FE degree background", background_space_finite_element_degree,
                 "", this->prm, Patterns::Integer(1));
 
@@ -316,9 +313,8 @@ ProblemParameters<dim>::ProblemParameters()
 }
 
 // The real class of the ellitpic interface problem.
-template <int dim>
-class EllipticInterfaceDLM {
- public:
+template <int dim> class EllipticInterfaceDLM {
+public:
   typedef double Number;
 
   EllipticInterfaceDLM(const ProblemParameters<dim> &prm);
@@ -350,7 +346,7 @@ class EllipticInterfaceDLM {
 
   void run();
 
- private:
+private:
   const ProblemParameters<dim> &parameters;
   Triangulation<dim> tria_bg;
   Triangulation<dim> tria_fg;
@@ -373,7 +369,7 @@ class EllipticInterfaceDLM {
   SparseMatrix<Number> stiffness_matrix_bg;
   SparseMatrix<Number> stiffness_matrix_fg;
   SparseMatrix<Number>
-      stiffness_matrix_fg_plus_id;  // A_2 + gammaId, needed for modifiedAL
+      stiffness_matrix_fg_plus_id; // A_2 + gammaId, needed for modifiedAL
   SparseMatrix<Number> coupling_matrix;
 
   SparseMatrix<Number> mass_matrix_fg;
@@ -391,9 +387,7 @@ class EllipticInterfaceDLM {
 template <int dim>
 EllipticInterfaceDLM<dim>::EllipticInterfaceDLM(
     const ProblemParameters<dim> &prm)
-    : parameters(prm),
-      dof_handler_bg(tria_bg),
-      dof_handler_fg(tria_fg),
+    : parameters(prm), dof_handler_bg(tria_bg), dof_handler_fg(tria_fg),
       fe_bg(parameters.background_space_finite_element_degree),
       fe_fg(parameters.immersed_space_finite_element_degree),
       computing_timer(MPI_COMM_WORLD, std::cout,
@@ -430,7 +424,7 @@ EllipticInterfaceDLM<dim>::EllipticInterfaceDLM(
 
   if (parameters.do_convergence_study)
     AssertThrow(dim == 2,
-                ExcNotImplemented());  // we check convergence rates only in 2D.
+                ExcNotImplemented()); // we check convergence rates only in 2D.
 
   // Check if the folder where we want to save solutions actually exists
   if (std::filesystem::exists(parameters.output_directory)) {
@@ -443,8 +437,7 @@ EllipticInterfaceDLM<dim>::EllipticInterfaceDLM(
 }
 
 // Generate the grids for the background and immersed domains
-template <int dim>
-void EllipticInterfaceDLM<dim>::generate_grids() {
+template <int dim> void EllipticInterfaceDLM<dim>::generate_grids() {
   TimerOutput::Scope t(computing_timer, "Grid generation");
 
   // The convergence test is constructed ad-hoc...
@@ -489,8 +482,8 @@ void EllipticInterfaceDLM<dim>::generate_grids() {
             << "h immersed = " << h_immersed << "\n"
             << "grids ratio (background/immersed) = " << ratio << std::endl;
 
-  AssertThrow(ratio < 2.2 && ratio > 0.4,
-              ExcMessage("Check mesh sizes of the two grids."));
+  // AssertThrow(ratio < 2.2 && ratio > 0.4,
+  //             ExcMessage("Check mesh sizes of the two grids."));
 
   // Do not dump grids to disk if they are too large
   if (tria_bg.n_active_cells() < 1e3) {
@@ -502,8 +495,7 @@ void EllipticInterfaceDLM<dim>::generate_grids() {
   }
 }
 
-template <int dim>
-void EllipticInterfaceDLM<dim>::system_setup() {
+template <int dim> void EllipticInterfaceDLM<dim>::system_setup() {
   TimerOutput::Scope t(computing_timer, "System setup");
 
   dof_handler_bg.distribute_dofs(fe_bg);
@@ -560,8 +552,7 @@ void EllipticInterfaceDLM<dim>::setup_stiffness_matrix(
   stiffness_matrix.reinit(stiffness_sparsity);
 }
 
-template <int dim>
-void EllipticInterfaceDLM<dim>::setup_coupling() {
+template <int dim> void EllipticInterfaceDLM<dim>::setup_coupling() {
   TimerOutput::Scope t(computing_timer, "Coupling setup");
 
   QGauss<dim> quad(fe_bg.degree + 1);
@@ -612,15 +603,15 @@ void EllipticInterfaceDLM<dim>::assemble_subsystem(
       for (const unsigned int i : fe_values.dof_indices()) {
         for (const unsigned int j : fe_values.dof_indices())
           cell_matrix(i, j) +=
-              (rho * fe_values.shape_value(i, q_index) *  // u
-                   fe_values.shape_value(j, q_index)      // v
-               + mu * fe_values.shape_grad(i, q_index) *  // grad u
-                     fe_values.shape_grad(j, q_index)) *  // grad v
-              fe_values.JxW(q_index);                     // dx
+              (rho * fe_values.shape_value(i, q_index) * // u
+                   fe_values.shape_value(j, q_index)     // v
+               + mu * fe_values.shape_grad(i, q_index) * // grad u
+                     fe_values.shape_grad(j, q_index)) * // grad v
+              fe_values.JxW(q_index);                    // dx
 
-        cell_rhs(i) += (rhs_values[q_index] *                // f(x)
-                        fe_values.shape_value(i, q_index) *  // phi_i(x_q)
-                        fe_values.JxW(q_index));             // dx
+        cell_rhs(i) += (rhs_values[q_index] *               // f(x)
+                        fe_values.shape_value(i, q_index) * // phi_i(x_q)
+                        fe_values.JxW(q_index));            // dx
       }
     }
 
@@ -630,34 +621,33 @@ void EllipticInterfaceDLM<dim>::assemble_subsystem(
   }
 }
 
-template <int dim>
-void EllipticInterfaceDLM<dim>::assemble() {
+template <int dim> void EllipticInterfaceDLM<dim>::assemble() {
   TimerOutput::Scope t(computing_timer, "Assemble matrices");
 
   // background stiffness matrix A
   assemble_subsystem(fe_bg, dof_handler_bg, constraints_bg, stiffness_matrix_bg,
                      system_rhs_block.block(0),
-                     0.,                 // 0, no mass matrix
-                     parameters.beta_1,  // only beta_1 (which is usually 1)
-                     parameters.f_1);    // rhs value, f
+                     0.,                // 0, no mass matrix
+                     parameters.beta_1, // only beta_1 (which is usually 1)
+                     parameters.f_1);   // rhs value, f
 
   // immersed matrix A2 = (beta_2 - beta) (grad u,grad v)
   // The rhs changes if we want to do a convergence study.
   if (parameters.do_convergence_study)
-    assemble_subsystem(
-        fe_fg, dof_handler_fg, constraints_fg, stiffness_matrix_fg,
-        system_rhs_block.block(1),
-        0.,                                     // 0, no mass matrix
-        parameters.beta_2 - parameters.beta_1,  // hardcoded before in this case
-        Functions::ConstantFunction<dim>{
-            0.});  // rhs value for convergence study
-  else             // read rhs values (constants) from parameters file
-    assemble_subsystem(
-        fe_fg, dof_handler_fg, constraints_fg, stiffness_matrix_fg,
-        system_rhs_block.block(1),
-        0.,                                     // 0, no mass matrix
-        parameters.beta_2 - parameters.beta_1,  // only jump beta_2 - beta
-        parameters.f_2_minus_f);                // rhs value, f2-f
+    assemble_subsystem(fe_fg, dof_handler_fg, constraints_fg,
+                       stiffness_matrix_fg, system_rhs_block.block(1),
+                       0., // 0, no mass matrix
+                       parameters.beta_2 -
+                           parameters.beta_1, // hardcoded before in this case
+                       Functions::ConstantFunction<dim>{
+                           0.}); // rhs value for convergence study
+  else // read rhs values (constants) from parameters file
+    assemble_subsystem(fe_fg, dof_handler_fg, constraints_fg,
+                       stiffness_matrix_fg, system_rhs_block.block(1),
+                       0., // 0, no mass matrix
+                       parameters.beta_2 -
+                           parameters.beta_1,   // only jump beta_2 - beta
+                       parameters.f_2_minus_f); // rhs value, f2-f
 
   //  mass matrix immersed
   assemble_subsystem(fe_fg, dof_handler_fg, constraints_fg, mass_matrix_fg,
@@ -669,8 +659,7 @@ void output_double_number(double input, const std::string &text) {
   std::cout << text << input << std::endl;
 }
 
-template <int dim>
-unsigned int EllipticInterfaceDLM<dim>::solve() {
+template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
   // Start with defining the outer iterations to an invalid value.
   unsigned int n_outer_iterations = numbers::invalid_unsigned_int;
 
@@ -692,10 +681,9 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   SparseDirectUMFPACK M_inv_umfpack;
 
   // Using inverse of diagonal mass matrix (squared)
-  Vector<double> inverse_diag_mass_squared(dof_handler_fg.n_dofs());
-  for (unsigned int i = 0; i < dof_handler_fg.n_dofs(); ++i)
-    inverse_diag_mass_squared[i] =
-        1. / (mass_matrix_fg.diag_element(i) * mass_matrix_fg.diag_element(i));
+  Vector<double> inverse_diag_mass_squared;
+  compute_inverse_diagonal_mass_squared(mass_matrix_fg,
+                                        inverse_diag_mass_squared);
 
   DiagonalMatrix<Vector<double>> diag_inverse;
   if (parameters.use_diagonal_inverse == true) {
@@ -705,7 +693,7 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
     // Use direct inversion
     {
       TimerOutput::Scope t(computing_timer, "Factorize mass matrix");
-      M_inv_umfpack.initialize(mass_matrix_fg);  // inverse immersed mass matrix
+      M_inv_umfpack.initialize(mass_matrix_fg); // inverse immersed mass matrix
     }
     invM = linear_operator(mass_matrix_fg, M_inv_umfpack);
     invW = invM * invM;
@@ -723,7 +711,7 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
   auto system_operator = block_operator<3, 3, BlockVector<double>>(
       {{{{A11_aug, A12_aug, Ct}},
         {{A21_aug, A22_aug, -1. * M}},
-        {{C, -1. * M, NullCouplin}}}});  // augmented the 2x2 top left block!
+        {{C, -1. * M, NullCouplin}}}}); // augmented the 2x2 top left block!
 
   // Initialize AMG preconditioners for inner solves
   TrilinosWrappers::PreconditionAMG amg_prec_A11;
@@ -772,9 +760,9 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
     x_2 /= x_2.l2_norm();
 
     Vector<double> result(dof_handler_fg.n_dofs());
-    coupling_matrix.Tvmult(result, x_1);  // Cx_1
+    coupling_matrix.Tvmult(result, x_1); // Cx_1
     x_2 *= -1.;
-    mass_matrix_fg.vmult_add(result, x_2);  // Cx_1 - Mx_2
+    mass_matrix_fg.vmult_add(result, x_2); // Cx_1 - Mx_2
     double norm = result.l2_norm();
     std::cout << "h_immersed = " << GridTools::maximal_cell_diameter(tria_fg)
               << ", norm of ||Cx1 - Mx_2||_2 = " << norm << std::endl;
@@ -801,7 +789,7 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
       if (parameters.use_fixed_iterations)
         solver_lagrangian_scalar = std::make_unique<SolverCG<Vector<double>>>(
             parameters.iteration_number_control);
-      else  //... or we iterate as usual.
+      else //... or we iterate as usual.
         solver_lagrangian_scalar = std::make_unique<SolverCG<Vector<double>>>(
             parameters.inner_solver_control);
 
@@ -815,13 +803,11 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
           preconditioner_AL(C, M, invW, parameters.gamma_AL_background,
                             A11_aug_inv, A22_aug_inv);
 
-      system_rhs_block.block(2) = 0;  // last row of the rhs is 0
+      system_rhs_block.block(2) = 0; // last row of the rhs is 0
 
       solver_fgmres.solve(system_operator, system_solution_block,
                           system_rhs_block, preconditioner_AL);
 
-      std::cout << "Norm of solution: "
-                << system_solution_block.block(0).l2_norm() << std::endl;
     } else {
       // Check that gamma is not too small. We force also gamma2 to be equal to
       // gamma.
@@ -829,7 +815,11 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
           parameters.gamma_AL_background > 1.,
           ExcMessage("Parameter gamma is probably too small for classical AL "
                      "preconditioner."));
-      parameters.gamma_AL_immersed = parameters.gamma_AL_background;
+
+      AssertThrow(std::abs(parameters.gamma_AL_background -
+                           parameters.gamma_AL_immersed) < 1e-12,
+                  ExcMessage("In the ideal case, gamma must be identical. "
+                             "Please set them to the same value."));
 
       std::cout << "\t ************************************** WARNING "
                    "************************************** \n"
@@ -847,7 +837,7 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
       PreconditionIdentity prec_id;
       auto Aug = block_operator<2, 2, BlockVector<double>>(
           {{{{A11_aug, A12_aug}},
-            {{A21_aug, A22_aug}}}});  // augmented block to be inverted
+            {{A21_aug, A22_aug}}}}); // augmented block to be inverted
 
       SolverCG<BlockVector<double>> solver_lagrangian(
           parameters.inner_solver_control);
@@ -856,7 +846,7 @@ unsigned int EllipticInterfaceDLM<dim>::solve() {
       EllipticInterfacePreconditioners::BlockTriangularALPreconditioner
           preconditioner_AL(Aug_inv, C, M, invW,
                             parameters.gamma_AL_background);
-      system_rhs_block.block(2) = 0;  // last row of the rhs is 0
+      system_rhs_block.block(2) = 0; // last row of the rhs is 0
       solver_fgmres.solve(system_operator, system_solution_block,
                           system_rhs_block, preconditioner_AL);
     }
@@ -996,8 +986,7 @@ void EllipticInterfaceDLM<dim>::output_results(
   }
 }
 
-template <int dim>
-void EllipticInterfaceDLM<dim>::run() {
+template <int dim> void EllipticInterfaceDLM<dim>::run() {
   // If we want to select the gamma value experimentally, we first run a
   // coarse problem for different sampled values of gamma. This makes sense
   // only for the modified AL preconditioner, so we check beforehand if it is
@@ -1020,7 +1009,7 @@ void EllipticInterfaceDLM<dim>::run() {
                 << std::endl;
       unsigned int iters = solve();
       outer_iterations.push_back(iters);
-      system_solution_block = 0;  // reset solution
+      system_solution_block = 0; // reset solution
     }
     // Find the minimum index
     const unsigned int min_index =
@@ -1073,9 +1062,9 @@ void EllipticInterfaceDLM<dim>::run() {
     if (parameters.use_modified_AL_preconditioner &&
         parameters.use_sqrt_2_rule) {
       parameters.gamma_AL_background /=
-          std::sqrt(2.);  // using sqrt(2)-rule from modified - AL paper
+          std::sqrt(2.); // using sqrt(2)-rule from modified - AL paper
       parameters.gamma_AL_immersed /=
-          std::sqrt(2.);  // using sqrt(2)-rule from modified - AL paper
+          std::sqrt(2.); // using sqrt(2)-rule from modified - AL paper
     }
     output_results(ref_cycle);
   }
