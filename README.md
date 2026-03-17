@@ -18,6 +18,19 @@ author = {Michele Benzi and Marco Feder and Luca Heltai and Federica Mugnaioni},
 keywords = {Preconditioning, Iterative solvers, Fictitious domain method, Non-matching meshes, Finite element method}
 }
 ```
+or the following preprint
+[*Augmented Lagrangian preconditioners for fictitious domain formulations of elliptic interface problems*](https://arxiv.org/abs/2603.12993)
+```
+@misc{benzi2026augmentedlagrangianpreconditionersfictitious,
+      title={Augmented Lagrangian preconditioners for fictitious domain formulations of elliptic interface problems}, 
+      author={Michele Benzi and Marco Feder and Luca Heltai and Federica Mugnaioni},
+      year={2026},
+      eprint={2603.12993},
+      archivePrefix={arXiv},
+      primaryClass={math.NA},
+      url={https://arxiv.org/abs/2603.12993}, 
+}
+```
 
 
 ## Prerequisites
