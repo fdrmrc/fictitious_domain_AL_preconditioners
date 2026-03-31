@@ -374,6 +374,9 @@ private:
   SparseMatrix<Number> stiffness_matrix_fg;
   SparseMatrix<Number>
       stiffness_matrix_fg_plus_id; // A_2 + gammaId, needed for modifiedAL
+  SparseMatrix<Number>
+      stiffness_matrix_fg_plus_scaled_M; // A_2 + gamma*h^{-2}M, needed for
+                                         // modifiedAL with h-scaled mass
   SparseMatrix<Number> coupling_matrix;
 
   SparseMatrix<Number> mass_matrix_fg;
@@ -527,6 +530,9 @@ template <int dim> void EllipticInterfaceDLM<dim>::system_setup() {
 
   setup_stiffness_matrix(dof_handler_fg, constraints_fg, stiffness_sparsity_fg,
                          stiffness_matrix_fg_plus_id);
+
+  setup_stiffness_matrix(dof_handler_fg, constraints_fg, stiffness_sparsity_fg,
+                         stiffness_matrix_fg_plus_scaled_M);
 
   mass_matrix_fg.reinit(stiffness_sparsity_fg);
 
@@ -757,20 +763,31 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
         {{C, -1. * M, NullCouplin}}}}); // augmented the 2x2 top left block!
 
   // Initialize AMG preconditioners for inner solves
-  TrilinosWrappers::PreconditionAMG amg_prec_A11;
+  // The first one is for the augmented (1,1) block, while the second one is for
+  // the augmented (2,2) block.
+  TrilinosWrappers::PreconditionAMG amg_prec_A11, amg_prec_A22;
   build_AMG_augmented_block_scalar(dof_handler_bg, coupling_matrix,
                                    stiffness_matrix_bg, inverse_diag_mass,
                                    coupling_sparsity, constraints_bg, gamma_1,
                                    parameters.beta_1, amg_prec_A11);
 
   // Initialize AMG prec for the A_2 augmented block
-  TrilinosWrappers::PreconditionAMG amg_prec_A22;
-  // immersed matrix (beta_2 - beta) (grad u,grad v) + gamma*Id
-  stiffness_matrix_fg_plus_id.copy_from(stiffness_matrix_fg);
-  // Add gamma*Id to A_2
-  for (unsigned int i = 0; i < stiffness_matrix_fg_plus_id.m(); ++i)
-    stiffness_matrix_fg_plus_id.add(i, i, gamma_2);
-  amg_prec_A22.initialize(stiffness_matrix_fg_plus_id);
+  if (parameters.use_h_scaled_mass) {
+    // in this case, the augmented A_2 block is A_omega2 + gamma * h^2
+    // M
+    assemble_subsystem(fe_fg, dof_handler_fg, constraints_fg,
+                       stiffness_matrix_fg_plus_scaled_M,
+                       system_rhs_block.block(2), gamma_2,
+                       parameters.beta_2 - parameters.beta_1,
+                       Functions::ConstantFunction<dim>{0.});
+  } else {
+    // immersed matrix (beta_2 - beta) (grad u,grad v) + gamma*Id
+    stiffness_matrix_fg_plus_id.copy_from(stiffness_matrix_fg);
+    // Add gamma*Id to A_2
+    for (unsigned int i = 0; i < stiffness_matrix_fg_plus_id.m(); ++i)
+      stiffness_matrix_fg_plus_id.add(i, i, gamma_2);
+  }
+  amg_prec_A22.initialize(stiffness_matrix_fg_plus_scaled_M);
   std::cout << "Initialized AMG for A_2" << std::endl;
 
   if (parameters.export_matrices_for_eig_analysis) {
@@ -779,7 +796,7 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
     export_to_matlab_csv(stiffness_matrix_fg, "A_2_DLFDM.csv");
     export_to_matlab_csv(coupling_matrix, "Ct_DLFDM.csv");
     export_to_matlab_csv(mass_matrix_fg, "M_DLFDM.csv");
-    std::cout << "Done." << std::endl;
+    std::cout << "Exporting matrices: done." << std::endl;
   }
 
   typename SolverFGMRES<BlockVector<Number>>::AdditionalData data_fgmres;
