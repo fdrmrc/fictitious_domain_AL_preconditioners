@@ -35,25 +35,36 @@ set Do parameter study             = false
 
    # Use diagonal approximation for the inverse (squared) of the immersed
    # mass matrix.
-set Use diagonal inverse           = false
+set Use diagonal inverse           = true
 
+<<<<<<< Updated upstream
+=======
+#Use W = h^2 M in the AL preconditioner
+set Use h-scaled mass              = false
+
+>>>>>>> Stashed changes
    # Use the modified AL preconditioner. If false, the classical AL
    # preconditioner is used.
-set Use modified AL preconditioner = false
+set Use modified AL preconditioner = true
 
    # Use sqrt(2)-rule for gamma. It makes sense only for modified AL
    # variant.
 set Use sqrt(2)-rule for gamma     = false
 set Verbosity level                = 10
+<<<<<<< Updated upstream
 set gamma fluid                    = 10
 set gamma solid                    = 10
+=======
+set gamma fluid                    = 10 #gamma_AL_background
+set gamma solid                    = 1e-2 #gamma_AL_immersed
+>>>>>>> Stashed changes
   end
 
   subsection Grid generation
 set Background grid generator           = hyper_cube
 set Background grid generator arguments = -1.: 1: true
-set Immersed grid generator             = hyper_cube#hyper_ball#hyper_cube#hyper_ball#hyper_cube
-set Immersed grid generator arguments   = -0.14: 0.47: true#0.,0. : 0.3 : false#-0.14: 0.47: true#0.,0. : 0.22 : true#-0.14: 0.47: true
+set Immersed grid generator             = hyper_ball#hyper_cube#hyper_ball#hyper_cube
+set Immersed grid generator arguments   = 0.,0. : 0.3 : false#-0.14: 0.47: true#0.,0. : 0.22 : true#-0.14: 0.47: true
   end
 
   subsection Inner solver control
@@ -99,7 +110,7 @@ set Stop gamma      = 1
 set Initial background refinement = 4
 
    # Initial number of refinements used for the immersed domain Gamma.
-set Initial immersed refinement   = 2#0
+set Initial immersed refinement   = 0#2
 
    # Number of refinement cycles to perform convergence studies.
 set Refinemented cycles           = 8

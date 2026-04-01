@@ -39,9 +39,12 @@ add_executable(immersed_laplace immersed_laplace.cc)
 add_executable(stokes_immersed_boundary stokes_immersed_boundary.cc)
 add_executable(elliptic_interface elliptic_interface.cc)
 add_executable(elliptic_interface_elasticity elliptic_interface_elasticity.cc)
+add_executable(elliptic_interface_riesz_test elliptic_interface_riesz_test.cc)
+
 
 # Link each executable with deal.II
 deal_ii_setup_target(immersed_laplace)
 deal_ii_setup_target(stokes_immersed_boundary)
 deal_ii_setup_target(elliptic_interface)
 deal_ii_setup_target(elliptic_interface_elasticity)
+deal_ii_setup_target(elliptic_interface_riesz_test)
