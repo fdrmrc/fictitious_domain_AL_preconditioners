@@ -2,7 +2,7 @@
 # ---------------------
 subsection Elliptic Interface Problem
 set Beta_1                             = 1
-set Beta_2                             = 1e7
+set Beta_2                             = 1e3
 set Coupling quadrature order          = 3
 set Export matrices for eigs-analysis  = false
 set FE degree background               = 1
@@ -37,6 +37,9 @@ set Do parameter study             = false
    # mass matrix.
 set Use diagonal inverse           = false
 
+#Use W = h^2 M in the AL preconditioner
+set Use h-scaled mass              = true
+
    # Use the modified AL preconditioner. If false, the classical AL
    # preconditioner is used.
 set Use modified AL preconditioner = false
@@ -45,8 +48,8 @@ set Use modified AL preconditioner = false
    # variant.
 set Use sqrt(2)-rule for gamma     = false
 set Verbosity level                = 10
-set gamma fluid                    = 10
-set gamma solid                    = 10
+set gamma fluid                    = 10 #gamma_AL_background
+set gamma solid                    = 10 #gamma_AL_immersed
   end
 
   subsection Grid generation

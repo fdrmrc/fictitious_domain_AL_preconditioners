@@ -721,9 +721,8 @@ void build_AMG_augmented_block_scalar(
   augmented_block.add(gamma, BtWinvB);
 
   const FEValuesExtractors::Vector displacements(0);
-  std::vector<std::vector<bool>> constant_modes;
-
-  DoFTools::extract_constant_modes(space_dh, ComponentMask(), constant_modes);
+  std::vector<std::vector<bool>> constant_modes =
+      DoFTools::extract_constant_modes(space_dh, ComponentMask());
   TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
   // amg_data.constant_modes = constant_modes;
   amg_data.aggregation_threshold = 1e-3;
