@@ -164,6 +164,8 @@ public:
 
   bool use_h_scaled_mass = false;
 
+  bool use_operator_form = false;
+
   bool use_sqrt_2_rule = false;
 
   bool do_sanity_checks = true;
@@ -261,6 +263,8 @@ ProblemParameters<dim>::ProblemParameters()
                   "immersed mass matrix.");
     add_parameter("Use h-scaled mass", use_h_scaled_mass,
                   "Use h-scaled mass matrix instead of its square.");
+    add_parameter("Use operator version", use_operator_form,
+                  "Apply operator form of augmented block.");
     add_parameter("Use sqrt(2)-rule for gamma", use_sqrt_2_rule,
                   "Use sqrt(2)-rule for gamma. It makes sense only for "
                   "modified AL variant.");
@@ -696,7 +700,7 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
   SparseDirectUMFPACK M_inv_umfpack;
   DiagonalMatrix<Vector<double>> diag_inverse;
   Vector<double> inverse_diag_mass;
-  if (parameters.use_h_scaled_mass) {
+  if (parameters.use_h_scaled_mass || parameters.use_operator_form) {
 
     if (parameters.use_diagonal_inverse) {
       inverse_diag_mass.reinit(mass_matrix_fg.m());
@@ -734,10 +738,10 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
     }
   }
 
-  // If we use the h_scaled variant, we attach the h-scaling factor to the gamma
-  // parameters.
+  // If we use the h_scaled variant or the operator-like version, we attach the
+  // h-scaling factor to the gamma parameters. Also if we use the operator form.
   double gamma_1, gamma_2;
-  if (parameters.use_h_scaled_mass) {
+  if (parameters.use_h_scaled_mass || parameters.use_operator_form) {
     const double h_immersed = GridTools::maximal_cell_diameter(tria_fg);
 
     gamma_1 = parameters.gamma_AL_background / (h_immersed * h_immersed);
@@ -748,9 +752,61 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
     gamma_2 = parameters.gamma_AL_immersed;
   }
 
-  // Define augmented blocks. Notice that A22_aug is actually A_omega2 +
-  // gamma_AL_background * Id
-  auto A11_aug = A_omega1 + gamma_1 * Ct * invW * C;
+  // Define augmented blocks
+  auto A11_aug = null_operator(A_omega1);
+  if (parameters.use_operator_form) {
+    TimerOutput::Scope t(computing_timer, "Construction of augmented AL term");
+    // first, we add particles at quadrature points of the coupling matrix,
+    Particles::ParticleHandler<dim> immersed_particle_handler;
+    QGauss<dim> immersed_quadrature(2 * fe_bg.degree + 1);
+
+    // initialize particle handler with particles on the immersed domain
+    ALUtils::initialize_particles<dim, dim, dim>(
+        immersed_particle_handler, dof_handler_bg, dof_handler_fg, mapping,
+        mapping, immersed_quadrature);
+
+    // then, we loop over the particles (and related background cells) to build
+    // the AL term
+    std::vector<types::global_dof_index> background_dof_indices(
+        fe_bg.n_dofs_per_cell());
+
+    FullMatrix<double> local_matrix(fe_bg.n_dofs_per_cell(),
+                                    fe_bg.n_dofs_per_cell());
+
+    auto particle = immersed_particle_handler.begin();
+    while (particle != immersed_particle_handler.end()) {
+      local_matrix = 0;
+      const auto &cell = particle->get_surrounding_cell();
+      const auto &dh_cell =
+          typename DoFHandler<dim>::cell_iterator(*cell, &dof_handler_bg);
+      dh_cell->get_dof_indices(background_dof_indices);
+
+      const auto pic = immersed_particle_handler.particles_in_cell(cell);
+      Assert(pic.begin() == particle, ExcInternalError());
+      for (const auto &p : pic) {
+        const Point<dim> ref_q = p.get_reference_location();
+        const double JxW = p.get_properties()[0];
+
+        for (unsigned int i = 0; i < fe_bg.n_dofs_per_cell(); ++i) {
+          for (unsigned int j = 0; j < fe_bg.n_dofs_per_cell(); ++j) {
+            local_matrix(i, j) += gamma_1                       // gamma*h^{-2}
+                                  * fe_bg.shape_value(i, ref_q) // phi_i
+                                  * fe_bg.shape_value(j, ref_q) // phi_j
+                                  * JxW;                        // JxW
+          }
+        }
+      }
+
+      constraints_bg.distribute_local_to_global(
+          local_matrix, background_dof_indices, stiffness_matrix_bg);
+
+      particle = pic.end();
+    }
+    A11_aug = linear_operator(stiffness_matrix_bg);
+  } else {
+    A11_aug = A_omega1 + gamma_1 * Ct * invW * C;
+  }
+
   auto A22_aug = A_omega2 + gamma_2 * M * invW * M;
   auto A12_aug = -gamma_1 * Ct * invW * M;
   // Next one is just transpose_operator(A12_aug);
@@ -766,14 +822,18 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
   // The first one is for the augmented (1,1) block, while the second one is for
   // the augmented (2,2) block.
   TrilinosWrappers::PreconditionAMG amg_prec_A11, amg_prec_A22;
-  build_AMG_augmented_block_scalar(dof_handler_bg, coupling_matrix,
-                                   stiffness_matrix_bg, inverse_diag_mass,
-                                   coupling_sparsity, constraints_bg, gamma_1,
-                                   parameters.beta_1, amg_prec_A11);
+  if (parameters.use_operator_form)
+    amg_prec_A11.initialize(stiffness_matrix_bg);
+  else
+    build_AMG_augmented_block_scalar(dof_handler_bg, coupling_matrix,
+                                     stiffness_matrix_bg, inverse_diag_mass,
+                                     coupling_sparsity, constraints_bg, gamma_1,
+                                     parameters.beta_1, amg_prec_A11);
 
   // Initialize AMG prec for the A_2 augmented block
-  if (parameters.use_h_scaled_mass) {
-    // in this case, the augmented A_2 block is A_omega2 + gamma * h^2
+  if (parameters.use_h_scaled_mass == true ||
+      parameters.use_operator_form == true) {
+    // in this case, the augmented A_2 block is A_omega2 + gamma * h^{-2}
     // M
     assemble_subsystem(fe_fg, dof_handler_fg, constraints_fg,
                        stiffness_matrix_fg_plus_scaled_M,
@@ -846,8 +906,8 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
                           system_rhs_block, preconditioner_AL);
 
     } else {
-      // Check that gamma is not too small. We force also gamma2 to be equal to
-      // gamma.
+      // Check that gamma is not too small. We force also gamma2 to be equal
+      // to gamma if we use the ideal variant.
 
       AssertThrow(
           parameters.gamma_AL_background > 1.,

@@ -13,6 +13,8 @@
 #include <deal.II/lac/utilities.h>
 #include <deal.II/lac/vector.h>
 #include <deal.II/numerics/matrix_tools.h>
+#include <deal.II/particles/particle_handler.h>
+#include <deal.II/particles/utilities.h>
 
 #include <algorithm>
 #include <cmath>
@@ -721,8 +723,9 @@ void build_AMG_augmented_block_scalar(
   augmented_block.add(gamma, BtWinvB);
 
   const FEValuesExtractors::Vector displacements(0);
-  std::vector<std::vector<bool>> constant_modes =
-      DoFTools::extract_constant_modes(space_dh, ComponentMask());
+  std::vector<std::vector<bool>> constant_modes;
+
+  DoFTools::extract_constant_modes(space_dh, ComponentMask(), constant_modes);
   TrilinosWrappers::PreconditionAMG::AdditionalData amg_data;
   // amg_data.constant_modes = constant_modes;
   amg_data.aggregation_threshold = 1e-3;
@@ -739,5 +742,99 @@ void build_AMG_augmented_block_scalar(
 // #endif
 #endif
 }
+
+/**
+ * Initialize the particle handler with particles at the quadrature points of
+ * the immersed domain. The particle handler is expected to be empty at this
+ * stage, and the function will throw an exception if this is not the case.
+ * This function will fill the particle handler object, and will allow to
+ * iterate through particles and query properties and background cells over
+ * which particles are falling.
+ *
+ */
+namespace ALUtils {
+template <int dim_back, int dim_immersed, int spacedim = dim_back>
+void initialize_particles(
+    Particles::ParticleHandler<spacedim> &solid_particle_handler,
+    const DoFHandler<dim_back, spacedim> &background_dh,
+    const DoFHandler<dim_immersed, spacedim> &immersed_dh,
+    const Mapping<spacedim> &background_mapping,
+    const Mapping<dim_immersed, spacedim> &immersed_mapping,
+    const QGauss<dim_immersed> &quadrature) {
+
+  Assert(solid_particle_handler.n_global_particles() == 0,
+         ExcMessage(
+             "The particle handler should be empty at this stage. Make sure "
+             "you don't call this function twice without clearing the "
+             "particles in between. Bailing out."));
+
+  std::vector<std::vector<BoundingBox<spacedim>>> global_fluid_bounding_boxes;
+
+  const Triangulation<dim_back, spacedim> &background_grid =
+      background_dh.get_triangulation();
+  const FiniteElement<spacedim> &space_fe = background_dh.get_fe();
+  const MPI_Comm &communicator = background_dh.get_mpi_communicator();
+
+  const Triangulation<dim_immersed, spacedim> &immersed_grid =
+      immersed_dh.get_triangulation();
+  const FiniteElement<dim_immersed, spacedim> &immersed_fe =
+      immersed_dh.get_fe();
+
+  std::vector<BoundingBox<spacedim>> all_boxes;
+  all_boxes.reserve(background_grid.n_active_cells());
+  for (const auto &cell : background_grid.active_cell_iterators())
+    if (cell->is_locally_owned())
+      all_boxes.emplace_back(cell->bounding_box());
+
+  const auto tree = pack_rtree(all_boxes);
+  // the extraction level is hardcoded here, but most of the times this is
+  // enough to get a crude approximation of the domain
+  const auto local_boxes = extract_rtree_level(tree, 1);
+
+  global_fluid_bounding_boxes =
+      Utilities::MPI::all_gather(communicator, local_boxes);
+
+  const unsigned int n_properties = 1;
+  solid_particle_handler.initialize(background_grid, background_mapping,
+                                    n_properties);
+
+  std::vector<Point<spacedim>> quadrature_points_vec;
+  quadrature_points_vec.reserve(quadrature.size() *
+                                immersed_grid.n_active_cells());
+
+  std::vector<std::vector<double>> properties;
+  properties.reserve(quadrature.size() * immersed_grid.n_active_cells());
+
+  FEValues<dim_immersed, spacedim> fe_v(
+      immersed_mapping, immersed_fe, quadrature,
+      update_JxW_values | update_quadrature_points);
+  for (const auto &cell : immersed_dh.active_cell_iterators())
+    if (cell->is_locally_owned()) {
+      fe_v.reinit(cell);
+      const auto &points = fe_v.get_quadrature_points();
+      const auto &JxW = fe_v.get_JxW_values();
+
+      for (unsigned int q = 0; q < points.size(); ++q) {
+        quadrature_points_vec.emplace_back(points[q]);
+        properties.emplace_back(std::vector<double>(n_properties, JxW[q]));
+      }
+    }
+
+  AssertThrow(!global_fluid_bounding_boxes.empty(),
+              ExcInternalError(
+                  "I was expecting the "
+                  "global_fluid_bounding_boxes to be filled at this stage. "
+                  "Make sure you fill this vector before trying to use it "
+                  "here. Bailing out."));
+
+  solid_particle_handler.insert_global_particles(
+      quadrature_points_vec, global_fluid_bounding_boxes, properties);
+
+#ifdef DEBUG
+  std::cout << "Solid particles: "
+            << solid_particle_handler.n_global_particles() << std::endl;
+#endif
+}
+} // namespace ALUtils
 
 #endif
