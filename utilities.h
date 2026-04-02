@@ -772,7 +772,6 @@ void initialize_particles(
 
   const Triangulation<dim_back, spacedim> &background_grid =
       background_dh.get_triangulation();
-  const FiniteElement<spacedim> &space_fe = background_dh.get_fe();
   const MPI_Comm &communicator = background_dh.get_mpi_communicator();
 
   const Triangulation<dim_immersed, spacedim> &immersed_grid =
