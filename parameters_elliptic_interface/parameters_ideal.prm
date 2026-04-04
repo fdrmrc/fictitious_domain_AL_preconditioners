@@ -8,7 +8,7 @@ set Export matrices for eigs-analysis  = false
 set FE degree background               = 1
 set FE degree immersed                 = 1
 set Homogeneous Dirichlet boundary ids = 0,1,2,3
-set Output directory                   = ./paper_data/ideal
+set Output directory                   = .
  # Using analytical solution for immersed circle (f = f_2 = 1)
 set Perform convergence study          = false
  # Check condition number of C*Ct after solve().
@@ -40,23 +40,26 @@ set Use diagonal inverse           = false
 #Use W = h^2 M in the AL preconditioner
 set Use h-scaled mass              = true
 
+#Directly assemble the augmented (1,1)-block
+set Use operator version           = false
+
    # Use the modified AL preconditioner. If false, the classical AL
    # preconditioner is used.
-set Use modified AL preconditioner = false
+set Use modified AL preconditioner = true
 
    # Use sqrt(2)-rule for gamma. It makes sense only for modified AL
    # variant.
 set Use sqrt(2)-rule for gamma     = false
 set Verbosity level                = 10
 set gamma fluid                    = 10 #gamma_AL_background
-set gamma solid                    = 10 #gamma_AL_immersed
+set gamma solid                    = 1e-2 #gamma_AL_immersed
   end
 
   subsection Grid generation
 set Background grid generator           = hyper_cube
 set Background grid generator arguments = -1.: 1: true
-set Immersed grid generator             = hyper_cube#hyper_ball#hyper_cube#hyper_ball#hyper_cube
-set Immersed grid generator arguments   = -0.14: 0.47: true#0.,0. : 0.3 : false#-0.14: 0.47: true#0.,0. : 0.22 : true#-0.14: 0.47: true
+set Immersed grid generator             = hyper_ball#hyper_cube#hyper_ball#hyper_cube#hyper_ball#hyper_cube
+set Immersed grid generator arguments   = 0.,0. : 0.3 : false#-0.14: 0.47: true#0.,0. : 0.3 : false#-0.14: 0.47: true#0.,0. : 0.22 : true#-0.14: 0.47: true
   end
 
   subsection Inner solver control
@@ -102,7 +105,7 @@ set Stop gamma      = 1
 set Initial background refinement = 4
 
    # Initial number of refinements used for the immersed domain Gamma.
-set Initial immersed refinement   = 2#0
+set Initial immersed refinement   = 0#2 if we use hyper_cube as immersed mesh
 
    # Number of refinement cycles to perform convergence studies.
 set Refinemented cycles           = 8
