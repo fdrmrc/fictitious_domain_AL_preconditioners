@@ -575,6 +575,54 @@ void NitscheLagrangeProblem<dim, spacedim>::solve() {
   system_rhs_block.block(0) = embedding_rhs;
   system_rhs_block.block(1) = embedded_rhs;
 
+  // Consistent RHS augmentation.
+  // We assemble it directly via a boundary-face loop on the bulk space (same
+  // pattern used for C), evaluating g at the same quadrature points.
+  {
+    const unsigned int boundary_q =
+        std::max({2u * space_fe->degree + 1u, 2u * multiplier_fe->degree + 1u,
+                  parameters.coupling_quadrature_order});
+    const QGauss<dim> face_quad(boundary_q);
+
+    FEFaceValues<spacedim> fe_face_values(
+        *space_fe, face_quad,
+        update_values | update_quadrature_points | update_JxW_values);
+
+    const unsigned int n_bulk_dofs = space_fe->n_dofs_per_cell();
+    Vector<double> local_rhs(n_bulk_dofs);
+    std::vector<types::global_dof_index> bulk_dof_indices(n_bulk_dofs);
+    std::vector<double> g_values(face_quad.size());
+
+    ManufacturedDirichlet<spacedim> manufactured_g;
+    const Function<spacedim> &g_for_rhs =
+        parameters.use_manufactured_solution
+            ? static_cast<const Function<spacedim> &>(manufactured_g)
+            : static_cast<const Function<spacedim> &>(g_function);
+
+    for (const auto &surface_cell : boundary_dh.active_cell_iterators()) {
+      const auto bulk_face = surface_to_volume_map.at(surface_cell);
+      const auto &owner = face_to_bulk_cell.at(bulk_face);
+      const auto &bulk_cell = owner.first;
+      const unsigned int bulk_face_no = owner.second;
+
+      fe_face_values.reinit(bulk_cell, bulk_face_no);
+      g_for_rhs.value_list(fe_face_values.get_quadrature_points(), g_values);
+
+      local_rhs = 0;
+      for (unsigned int q = 0; q < face_quad.size(); ++q) {
+        const double JxW = fe_face_values.JxW(q);
+        const double gq = g_values[q];
+        for (unsigned int i = 0; i < n_bulk_dofs; ++i)
+          local_rhs(i) +=
+              gamma * invW_scale * fe_face_values.shape_value(i, q) * gq * JxW;
+      }
+
+      bulk_cell->get_dof_indices(bulk_dof_indices);
+      constraints.distribute_local_to_global(local_rhs, bulk_dof_indices,
+                                             system_rhs_block.block(0));
+    }
+  }
+
   SolverCG<Vector<double>> solver_lagrangian(inner_solver_control);
   auto A_inv = inverse_operator(Aug, solver_lagrangian,
                                 prec_for_cg); //! linear solver augmented
@@ -584,11 +632,6 @@ void NitscheLagrangeProblem<dim, spacedim>::solve() {
   auto invW = invW_scale * invM;
   // The preconditioner's `Ct` argument is the (0,1) block (multiplier->bulk)
   BlockPreconditionerAugmentedLagrangian AL_prec{A_inv, Ct, C, invW, gamma};
-
-  // Augment the top RHS consistently with the augmented (1,1) block:
-  //   f_tilde = f + gamma * C * W^{-1} * g
-  system_rhs_block.block(0).add(
-      1., Vector<double>(gamma * C * invW * embedded_rhs));
 
   SolverFGMRES<BlockVector<double>> solver(outer_solver_control);
 
