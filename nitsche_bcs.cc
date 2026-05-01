@@ -20,8 +20,11 @@
 
 #include <deal.II/dofs/dof_tools.h>
 
+#include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_simplex_p.h>
 #include <deal.II/fe/fe_values.h>
+#include <deal.II/fe/mapping_fe.h>
 #include <deal.II/fe/mapping_q1.h>
 
 #include <deal.II/grid/grid_generator.h>
@@ -57,6 +60,22 @@
 
 namespace NitscheBCs {
 using namespace dealii;
+
+// True if the parameter selects tensor-product (quad/hex) cells.
+inline bool is_hex_mesh(const std::string &mesh_type) {
+  return mesh_type == "hex";
+}
+
+// Build a quadrature appropriate for the active mesh type.
+// QGauss is implemented for any positive number of points; QGaussSimplex is
+// only implemented for n_points_1D in {1,2,3,4} so let's cap the quad rule.
+template <int d>
+inline Quadrature<d> make_quadrature(const std::string &mesh_type,
+                                     const unsigned int n) {
+  if (is_hex_mesh(mesh_type))
+    return QGauss<d>(std::max(1u, n));
+  return QGaussSimplex<d>(std::min(4u, std::max(1u, n)));
+}
 
 // Manufactured solution used for the optional convergence study.
 template <int spacedim> class ManufacturedSolution : public Function<spacedim> {
@@ -113,7 +132,9 @@ public:
     unsigned int verbosity_level = 4;
     bool use_discontinuous_multiplier = false;
     std::string name_external_grid = "idealized_lv.msh";
-    double scale_factor = 1;
+    double scale_factor = 1.0;
+    // Cell type for both the bulk and boundary meshes: "hex" or "simplex".
+    std::string mesh_type = "simplex";
 
     // If true, ignore the user-provided right-hand side and Dirichlet data
     // and use the hardcoded manufactured solution  u(x,y) = sin(pi x) sin(pi y)
@@ -138,11 +159,13 @@ private:
 
   Triangulation<spacedim> space_grid;
   std::unique_ptr<FiniteElement<spacedim>> space_fe;
+  std::unique_ptr<Mapping<spacedim>> bulk_mapping;
   DoFHandler<spacedim> space_dh;
 
   // Boundary (multiplier) mesh and FE, extracted from space_grid.
   std::unique_ptr<Triangulation<dim, spacedim>> boundary_grid;
   std::unique_ptr<FiniteElement<dim, spacedim>> multiplier_fe;
+  std::unique_ptr<Mapping<dim, spacedim>> surf_mapping;
   DoFHandler<dim, spacedim> boundary_dh;
 
   // Surface-cell -> bulk-face map filled by extract_boundary_mesh.
@@ -206,6 +229,11 @@ NitscheLagrangeProblem<dim, spacedim>::Parameters::Parameters()
   add_parameter("Scale factor for the external grid", scale_factor);
   add_parameter("Coupling quadrature order", coupling_quadrature_order);
   add_parameter("Verbosity level", verbosity_level);
+  add_parameter("Mesh type", mesh_type,
+                "Cell type used for both the bulk and boundary meshes. "
+                "Either \"hex\" (tensor-product quads/hexes) or \"simplex\" "
+                "(tris/tets).",
+                ParameterAcceptor::prm, Patterns::Selection("hex|simplex"));
   add_parameter(
       "Use manufactured solution", use_manufactured_solution,
       "If true, override the right-hand side and Dirichlet data with the "
@@ -263,9 +291,20 @@ void NitscheLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
     space_grid.refine_global(extra_refinements);
     GridTools::scale(parameters.scale_factor, space_grid);
   } else {
-    GridGenerator::generate_from_name_and_arguments(
-        space_grid, parameters.name_of_grid, parameters.arguments_for_grid);
-    space_grid.refine_global(parameters.initial_refinement + extra_refinements);
+    if (is_hex_mesh(parameters.mesh_type)) {
+      GridGenerator::generate_from_name_and_arguments(
+          space_grid, parameters.name_of_grid, parameters.arguments_for_grid);
+      space_grid.refine_global(parameters.initial_refinement +
+                               extra_refinements);
+    } else {
+      // convert to simplex mesh so the rest of the program can run on
+      // tris/tets.
+      Triangulation<spacedim> hex_grid;
+      GridGenerator::generate_from_name_and_arguments(
+          hex_grid, parameters.name_of_grid, parameters.arguments_for_grid);
+      hex_grid.refine_global(parameters.initial_refinement + extra_refinements);
+      GridGenerator::convert_hypercube_to_simplex_mesh(hex_grid, space_grid);
+    }
   }
   ++extra_refinements;
 
@@ -275,16 +314,75 @@ void NitscheLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
   face_to_bulk_cell.clear();
   surface_to_volume_map.clear();
 
-  // Extract the boundary mesh on the bulk grid: the returned map directly
-  // relates active surface cells to active bulk boundary faces, so no
-  // post-processing is needed.
+  // Extract the boundary mesh on the bulk grid. For hypercube meshes we use
+  // GridGenerator::extract_boundary_mesh, which already returns the surface
+  // cell -> bulk face map. That function is hardcoded for tensor-product
+  // cells (faces with 4 vertices in 3d) and does not support simplex bulk
+  // meshes, so for simplex grids we build the surface triangulation and
+  // associated map manually.
   boundary_grid = std::make_unique<Triangulation<dim, spacedim>>();
-  surface_to_volume_map =
-      GridGenerator::extract_boundary_mesh(space_grid, *boundary_grid);
+  if (is_hex_mesh(parameters.mesh_type)) {
+    surface_to_volume_map =
+        GridGenerator::extract_boundary_mesh(space_grid, *boundary_grid);
+  } else {
+    using BulkFaceIt =
+        typename Triangulation<spacedim, spacedim>::face_iterator;
 
-  // Bulk DoFs
-  space_fe = std::make_unique<FE_Q<spacedim>>(
-      parameters.bulk_space_finite_element_degree);
+    std::vector<Point<spacedim>> surf_vertices;
+    std::vector<CellData<dim>> surf_cells;
+    std::vector<BulkFaceIt> face_per_surf_cell;
+
+    std::map<unsigned int, unsigned int> bulk_to_surf_vertex;
+    for (const auto &bulk_cell : space_grid.active_cell_iterators())
+      for (const unsigned int f : bulk_cell->face_indices())
+        if (bulk_cell->at_boundary(f)) {
+          const auto face = bulk_cell->face(f);
+          const unsigned int n_v = face->n_vertices();
+          CellData<dim> cd;
+          cd.vertices.resize(n_v);
+          for (unsigned int j = 0; j < n_v; ++j) {
+            const unsigned int v_index = face->vertex_index(j);
+            auto it = bulk_to_surf_vertex.find(v_index);
+            if (it == bulk_to_surf_vertex.end()) {
+              const unsigned int new_index = surf_vertices.size();
+              surf_vertices.push_back(face->vertex(j));
+              bulk_to_surf_vertex[v_index] = new_index;
+              cd.vertices[j] = new_index;
+            } else {
+              cd.vertices[j] = it->second;
+            }
+          }
+          cd.material_id = static_cast<types::material_id>(face->boundary_id());
+          cd.manifold_id = face->manifold_id();
+          surf_cells.push_back(std::move(cd));
+          face_per_surf_cell.push_back(face);
+        }
+
+    AssertThrow(!surf_cells.empty(), ExcMessage("No boundary faces found"));
+
+    boundary_grid->create_triangulation(surf_vertices, surf_cells,
+                                        SubCellData());
+
+    // create_triangulation preserves the order of input cells, so the i-th
+    // active surface cell corresponds to the i-th boundary face we pushed.
+    unsigned int idx = 0;
+    for (const auto &surf_cell : boundary_grid->active_cell_iterators()) {
+      surface_to_volume_map[surf_cell] = face_per_surf_cell[idx];
+      ++idx;
+    }
+  }
+
+  // Bulk DoFs and bulk mapping
+  if (is_hex_mesh(parameters.mesh_type)) {
+    space_fe = std::make_unique<FE_Q<spacedim>>(
+        parameters.bulk_space_finite_element_degree);
+    bulk_mapping = std::make_unique<MappingQ1<spacedim>>();
+  } else {
+    space_fe = std::make_unique<FE_SimplexP<spacedim>>(
+        parameters.bulk_space_finite_element_degree);
+    bulk_mapping =
+        std::make_unique<MappingFE<spacedim>>(FE_SimplexP<spacedim>(1));
+  }
   space_dh.distribute_dofs(*space_fe);
 
   // boundary conditions are imposed weakly through lambda.
@@ -300,13 +398,25 @@ void NitscheLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
   solution.reinit(space_dh.n_dofs());
   embedding_rhs.reinit(space_dh.n_dofs());
 
-  // Multiplier DoFs on the boundary mesh.
-  if (parameters.use_discontinuous_multiplier == true)
-    multiplier_fe = std::make_unique<FE_DGQ<dim, spacedim>>(
-        parameters.multiplier_finite_element_degree);
-  else // continuous
-    multiplier_fe = std::make_unique<FE_Q<dim, spacedim>>(
-        parameters.multiplier_finite_element_degree);
+  // Multiplier DoFs on the boundary mesh, plus surface mapping.
+  if (is_hex_mesh(parameters.mesh_type)) {
+    if (parameters.use_discontinuous_multiplier == true)
+      multiplier_fe = std::make_unique<FE_DGQ<dim, spacedim>>(
+          parameters.multiplier_finite_element_degree);
+    else // continuous
+      multiplier_fe = std::make_unique<FE_Q<dim, spacedim>>(
+          parameters.multiplier_finite_element_degree);
+    surf_mapping = std::make_unique<MappingQ1<dim, spacedim>>();
+  } else {
+    if (parameters.use_discontinuous_multiplier == true)
+      multiplier_fe = std::make_unique<FE_SimplexDGP<dim, spacedim>>(
+          parameters.multiplier_finite_element_degree);
+    else // continuous
+      multiplier_fe = std::make_unique<FE_SimplexP<dim, spacedim>>(
+          parameters.multiplier_finite_element_degree);
+    surf_mapping = std::make_unique<MappingFE<dim, spacedim>>(
+        FE_SimplexP<dim, spacedim>(1));
+  }
 
   boundary_dh.reinit(*boundary_grid);
   boundary_dh.distribute_dofs(*multiplier_fe);
@@ -366,8 +476,9 @@ void NitscheLagrangeProblem<dim, spacedim>::assemble_system() {
   TimerOutput::Scope timer_section(monitor, "Assemble system");
 
   {
-    const QGauss<spacedim> quadrature(2 * space_fe->degree + 1);
-    FEValues<spacedim> fe_values(*space_fe, quadrature,
+    const auto quadrature = make_quadrature<spacedim>(parameters.mesh_type,
+                                                      2 * space_fe->degree + 1);
+    FEValues<spacedim> fe_values(*bulk_mapping, *space_fe, quadrature,
                                  update_values | update_gradients |
                                      update_quadrature_points |
                                      update_JxW_values);
@@ -418,7 +529,7 @@ void NitscheLagrangeProblem<dim, spacedim>::assemble_system() {
   const unsigned int boundary_q =
       std::max({2u * space_fe->degree + 1u, 2u * multiplier_fe->degree + 1u,
                 parameters.coupling_quadrature_order});
-  const QGauss<dim> face_quad(boundary_q);
+  const auto face_quad = make_quadrature<dim>(parameters.mesh_type, boundary_q);
 
   // RHS for the multiplier equation
   ManufacturedDirichlet<spacedim> manufactured_g;
@@ -426,11 +537,12 @@ void NitscheLagrangeProblem<dim, spacedim>::assemble_system() {
       parameters.use_manufactured_solution
           ? static_cast<const Function<spacedim> &>(manufactured_g)
           : static_cast<const Function<spacedim> &>(g_function);
-  VectorTools::create_right_hand_side(boundary_dh, face_quad, g_for_rhs,
-                                      embedded_rhs);
+  VectorTools::create_right_hand_side(*surf_mapping, boundary_dh, face_quad,
+                                      g_for_rhs, embedded_rhs);
 
   // Mass matrix on the multiplier space (defined on boundary mesh).
-  MatrixTools::create_mass_matrix(boundary_dh, face_quad, boundary_mass_matrix);
+  MatrixTools::create_mass_matrix(*surf_mapping, boundary_dh, face_quad,
+                                  boundary_mass_matrix);
 
   // Assemble the coupling matrix C with entries C_{ij} = (phi_i^bulk,
   // phi_j^surf) integrated on the boundary face. pair each surface cell with
@@ -438,10 +550,10 @@ void NitscheLagrangeProblem<dim, spacedim>::assemble_system() {
   // coincide on the surface and on the bulk face.
 
   FEFaceValues<spacedim> fe_face_values(
-      *space_fe, face_quad,
+      *bulk_mapping, *space_fe, face_quad,
       update_values | update_quadrature_points | update_JxW_values);
-  FEValues<dim, spacedim> fe_surface_values(*multiplier_fe, face_quad,
-                                            update_values);
+  FEValues<dim, spacedim> fe_surface_values(*surf_mapping, *multiplier_fe,
+                                            face_quad, update_values);
 
   const unsigned int n_bulk_dofs = space_fe->n_dofs_per_cell();
   const unsigned int n_surf_dofs = multiplier_fe->n_dofs_per_cell();
@@ -524,7 +636,8 @@ void NitscheLagrangeProblem<dim, spacedim>::solve() {
   SparseDirectUMFPACK M_inv_umfpack;
   M_inv_umfpack.initialize(boundary_mass_matrix);
 
-  MappingQ1<dim, spacedim> embedded_mapping; // TODO: do not hardcode this
+  // Surface and bulk mappings are stored as members; reuse them here.
+  const Mapping<dim, spacedim> &embedded_mapping = *surf_mapping;
   double gamma = 10.;
   TrilinosWrappers::PreconditionAMG amg_prec;
   auto prec_for_cg = null_operator(K);
@@ -540,11 +653,11 @@ void NitscheLagrangeProblem<dim, spacedim>::solve() {
     const unsigned int boundary_q =
         std::max({2u * space_fe->degree + 1u, 2u * multiplier_fe->degree + 1u,
                   parameters.coupling_quadrature_order});
-    QGauss<dim> immersed_quadrature(boundary_q);
+    auto immersed_quadrature =
+        make_quadrature<dim>(parameters.mesh_type, boundary_q);
     ALUtils::initialize_particles<spacedim, dim, spacedim>(
-        immersed_particle_handler, space_dh, boundary_dh,
-        StaticMappingQ1<spacedim>::mapping, embedded_mapping,
-        immersed_quadrature);
+        immersed_particle_handler, space_dh, boundary_dh, *bulk_mapping,
+        embedded_mapping, immersed_quadrature);
 
     // and then we loop over the particles to build the AL term
     std::vector<types::global_dof_index> background_dof_indices(
@@ -606,10 +719,11 @@ void NitscheLagrangeProblem<dim, spacedim>::solve() {
     const unsigned int boundary_q =
         std::max({2u * space_fe->degree + 1u, 2u * multiplier_fe->degree + 1u,
                   parameters.coupling_quadrature_order});
-    const QGauss<dim> face_quad(boundary_q);
+    const auto face_quad =
+        make_quadrature<dim>(parameters.mesh_type, boundary_q);
 
     FEFaceValues<spacedim> fe_face_values(
-        *space_fe, face_quad,
+        *bulk_mapping, *space_fe, face_quad,
         update_values | update_quadrature_points | update_JxW_values);
 
     const unsigned int n_bulk_dofs = space_fe->n_dofs_per_cell();
@@ -697,21 +811,25 @@ void NitscheLagrangeProblem<dim, spacedim>::solve() {
 
   // If the manufactured solution is active, compute L2 / H1-seminorm errors
   // of u against u_ex on the bulk mesh
-  const double h_bulk = GridTools::maximal_cell_diameter(space_grid);
+  const double h_bulk =
+      GridTools::maximal_cell_diameter(space_grid, *bulk_mapping);
   convergence_table.add_value("h", h_bulk);
   if (parameters.use_manufactured_solution) {
     ManufacturedSolution<spacedim> u_ex;
-    const QGauss<spacedim> error_quad(2 * space_fe->degree + 2);
+    const auto error_quad = make_quadrature<spacedim>(parameters.mesh_type,
+                                                      2 * space_fe->degree + 2);
 
     Vector<double> per_cell_l2(space_grid.n_active_cells());
-    VectorTools::integrate_difference(space_dh, solution, u_ex, per_cell_l2,
-                                      error_quad, VectorTools::L2_norm);
+    VectorTools::integrate_difference(*bulk_mapping, space_dh, solution, u_ex,
+                                      per_cell_l2, error_quad,
+                                      VectorTools::L2_norm);
     const double l2_err = VectorTools::compute_global_error(
         space_grid, per_cell_l2, VectorTools::L2_norm);
 
     Vector<double> per_cell_h1(space_grid.n_active_cells());
-    VectorTools::integrate_difference(space_dh, solution, u_ex, per_cell_h1,
-                                      error_quad, VectorTools::H1_seminorm);
+    VectorTools::integrate_difference(*bulk_mapping, space_dh, solution, u_ex,
+                                      per_cell_h1, error_quad,
+                                      VectorTools::H1_seminorm);
     const double h1_err = VectorTools::compute_global_error(
         space_grid, per_cell_h1, VectorTools::H1_seminorm);
 
@@ -729,7 +847,8 @@ void NitscheLagrangeProblem<dim, spacedim>::output_results() {
   DataOut<spacedim> bulk_out;
   bulk_out.attach_dof_handler(space_dh);
   bulk_out.add_data_vector(solution, "u");
-  bulk_out.build_patches(parameters.bulk_space_finite_element_degree);
+  bulk_out.build_patches(*bulk_mapping,
+                         parameters.bulk_space_finite_element_degree);
   std::ofstream bulk_file("solution_bulk.vtu");
   bulk_out.write_vtu(bulk_file);
 
@@ -737,7 +856,7 @@ void NitscheLagrangeProblem<dim, spacedim>::output_results() {
   surf_out.attach_dof_handler(boundary_dh);
   surf_out.add_data_vector(lambda, "lambda",
                            DataOut<dim, spacedim>::type_dof_data);
-  surf_out.build_patches();
+  surf_out.build_patches(*surf_mapping);
   std::ofstream surf_file("multiplier.vtu");
   surf_out.write_vtu(surf_file);
 }
