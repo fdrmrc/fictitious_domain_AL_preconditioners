@@ -136,6 +136,12 @@ public:
     // Cell type for both the bulk and boundary meshes: "hex" or "simplex".
     std::string mesh_type = "simplex";
 
+    // If true, build the AL augmentation term gamma*(1/h)*(u,v)_{Gamma}
+    // by inserting tracking particles on the boundary and looping
+    // over them. If false, assemble the same term directly during the
+    // boundary-face loop used for the coupling matrix C.
+    bool use_particles_for_augmentation = true;
+
     // If true, ignore the user-provided right-hand side and Dirichlet data
     // and use the hardcoded manufactured solution  u(x,y) = sin(pi x) sin(pi y)
     // on (0,1)^2,
@@ -234,6 +240,13 @@ NitscheLagrangeProblem<dim, spacedim>::Parameters::Parameters()
                 "Either \"hex\" (tensor-product quads/hexes) or \"simplex\" "
                 "(tris/tets).",
                 ParameterAcceptor::prm, Patterns::Selection("hex|simplex"));
+  add_parameter(
+      "Use particles to impose constraints", use_particles_for_augmentation,
+      "If true, the AL augmentation term gamma*(1/h)*(u,v)_{Gamma} is "
+      "assembled via tracking particles placed at quadrature points on the "
+      "immersed boundary. If false, it is assembled directly through a "
+      "boundary-face loop on the bulk space, reusing the surface-to-bulk "
+      "face map already used to build the coupling matrix C.");
   add_parameter(
       "Use manufactured solution", use_manufactured_solution,
       "If true, override the right-hand side and Dirichlet data with the "
@@ -491,6 +504,33 @@ void NitscheLagrangeProblem<dim, spacedim>::assemble_system() {
     std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
     std::vector<double> rhs_values(n_q_points);
 
+    // When the augmentation is not done with particles, we add the
+    // gamma*(1/h)*(u,v)_{Gamma} term directly here while looping over
+    // bulk cells, by visiting their boundary faces. The constants below
+    // must match those used in solve() for the Schur preconditioner.
+
+    const bool augment_via_faces = !parameters.use_particles_for_augmentation;
+    const double gamma_aug = 10.0;
+    const double invW_scale_aug = augment_via_faces
+                                      ? 1.0 / GridTools::maximal_cell_diameter(
+                                                  *boundary_grid, *surf_mapping)
+                                      : 0.0;
+    const unsigned int boundary_q_aug =
+        std::max({2u * space_fe->degree + 1u, 2u * multiplier_fe->degree + 1u,
+                  parameters.coupling_quadrature_order});
+    const auto face_quad_aug =
+        make_quadrature<dim>(parameters.mesh_type, boundary_q_aug);
+    FEFaceValues<spacedim> fe_face_values_aug(
+        *bulk_mapping, *space_fe, face_quad_aug,
+        update_values | update_quadrature_points | update_JxW_values);
+    std::vector<double> g_values_aug(face_quad_aug.size());
+
+    ManufacturedDirichlet<spacedim> manufactured_g_aug;
+    const Function<spacedim> &g_for_aug =
+        parameters.use_manufactured_solution
+            ? static_cast<const Function<spacedim> &>(manufactured_g_aug)
+            : static_cast<const Function<spacedim> &>(g_function);
+
     for (const auto &cell : space_dh.active_cell_iterators()) {
       fe_values.reinit(cell);
       cell_matrix = 0.;
@@ -515,6 +555,33 @@ void NitscheLagrangeProblem<dim, spacedim>::assemble_system() {
                 JxW;
           cell_rhs(i) += fe_values.shape_value(i, q) * rhs_values[q] * JxW;
         }
+      }
+
+      // AL augmentation: add gamma*(1/h)*(u,v) on each boundary face of this
+      // cell directly into cell_matrix, and the consistent gamma*(1/h)*(g,v)
+      // contribution into cell_rhs.
+      if (augment_via_faces && cell->at_boundary()) {
+        for (const unsigned int f : cell->face_indices())
+          if (cell->face(f)->at_boundary()) {
+            fe_face_values_aug.reinit(cell, f);
+            g_for_aug.value_list(fe_face_values_aug.get_quadrature_points(),
+                                 g_values_aug);
+            for (unsigned int q = 0; q < face_quad_aug.size(); ++q) {
+              const double JxW = fe_face_values_aug.JxW(q);
+              const double gq = g_values_aug[q];
+              for (unsigned int i = 0; i < dofs_per_cell; ++i) {
+                const double v_i = fe_face_values_aug.shape_value(i, q);
+                cell_rhs(i) += gamma_aug * invW_scale_aug * v_i * gq * JxW;
+                for (unsigned int j = 0; j < dofs_per_cell; ++j)
+                  cell_matrix(i, j) +=
+                      gamma_aug *                          // gamma
+                      invW_scale_aug *                     // h^{-1}
+                      v_i *                                // phi_i
+                      fe_face_values_aug.shape_value(j, q) // phi_j
+                      * JxW;
+              }
+            }
+          }
       }
 
       cell->get_dof_indices(local_dof_indices);
@@ -616,6 +683,7 @@ void NitscheLagrangeProblem<dim, spacedim>::assemble_system() {
                            "measure: assembly is likely incorrect."));
   }
 #endif
+  std::cout << "Assembly complete." << std::endl;
 }
 
 template <int dim, int spacedim>
@@ -634,7 +702,9 @@ void NitscheLagrangeProblem<dim, spacedim>::solve() {
   // Zero (1,1) block: (multiplier,multiplier)
   const auto Zero = null_operator(Ct * C);
   SparseDirectUMFPACK M_inv_umfpack;
+  std::cout << "Factorizing mass matrix on multiplier space..." << std::endl;
   M_inv_umfpack.initialize(boundary_mass_matrix);
+  std::cout << "Done." << std::endl;
 
   // Surface and bulk mappings are stored as members; reuse them here.
   const Mapping<dim, spacedim> &embedded_mapping = *surf_mapping;
@@ -648,56 +718,78 @@ void NitscheLagrangeProblem<dim, spacedim>::solve() {
         GridTools::maximal_cell_diameter(*boundary_grid, embedded_mapping);
     invW_scale = 1.0 / h_immersed;
 
-    Particles::ParticleHandler<spacedim> immersed_particle_handler;
+    if (parameters.use_particles_for_augmentation) {
+      Particles::ParticleHandler<spacedim> immersed_particle_handler;
 
-    const unsigned int boundary_q =
-        std::max({2u * space_fe->degree + 1u, 2u * multiplier_fe->degree + 1u,
-                  parameters.coupling_quadrature_order});
-    auto immersed_quadrature =
-        make_quadrature<dim>(parameters.mesh_type, boundary_q);
-    ALUtils::initialize_particles<spacedim, dim, spacedim>(
-        immersed_particle_handler, space_dh, boundary_dh, *bulk_mapping,
-        embedded_mapping, immersed_quadrature);
+      const unsigned int boundary_q =
+          std::max({2u * space_fe->degree + 1u, 2u * multiplier_fe->degree + 1u,
+                    parameters.coupling_quadrature_order});
+      auto immersed_quadrature =
+          make_quadrature<dim>(parameters.mesh_type, boundary_q);
+      ALUtils::initialize_particles<spacedim, dim, spacedim>(
+          immersed_particle_handler, space_dh, boundary_dh, *bulk_mapping,
+          embedded_mapping, immersed_quadrature);
 
-    // and then we loop over the particles to build the AL term
-    std::vector<types::global_dof_index> background_dof_indices(
-        space_fe->n_dofs_per_cell());
+      // Assemble:
+      // gamma*(1/h)*(u,v)_{Gamma} into the (0,0) block of the augmented matrix,
+      // and the consistent gamma*(1/h)*(g,v)_{Gamma} contribution into the bulk
+      // rhs
+      ManufacturedDirichlet<spacedim> manufactured_g;
+      const Function<spacedim> &g_for_aug =
+          parameters.use_manufactured_solution
+              ? static_cast<const Function<spacedim> &>(manufactured_g)
+              : static_cast<const Function<spacedim> &>(g_function);
 
-    FullMatrix<double> local_matrix(space_fe->n_dofs_per_cell(),
-                                    space_fe->n_dofs_per_cell());
+      std::vector<types::global_dof_index> background_dof_indices(
+          space_fe->n_dofs_per_cell());
 
-    auto particle = immersed_particle_handler.begin();
-    while (particle != immersed_particle_handler.end()) {
-      local_matrix = 0;
-      const auto &cell = particle->get_surrounding_cell();
-      const auto &dh_cell =
-          typename DoFHandler<spacedim>::cell_iterator(*cell, &space_dh);
-      dh_cell->get_dof_indices(background_dof_indices); // background dofs
+      FullMatrix<double> local_matrix(space_fe->n_dofs_per_cell(),
+                                      space_fe->n_dofs_per_cell());
+      Vector<double> local_rhs(space_fe->n_dofs_per_cell());
 
-      const auto pic = immersed_particle_handler.particles_in_cell(cell);
-      Assert(pic.begin() == particle, ExcInternalError());
-      for (const auto &p : pic) {
-        const Point<spacedim> ref_q = p.get_reference_location();
-        const double JxW = p.get_properties()[0];
+      auto particle = immersed_particle_handler.begin();
+      while (particle != immersed_particle_handler.end()) {
+        local_matrix = 0;
+        local_rhs = 0;
+        const auto &cell = particle->get_surrounding_cell();
+        const auto &dh_cell =
+            typename DoFHandler<spacedim>::cell_iterator(*cell, &space_dh);
+        dh_cell->get_dof_indices(background_dof_indices); // background dofs
 
-        for (unsigned int i = 0; i < space_fe->n_dofs_per_cell(); ++i) {
-          for (unsigned int j = 0; j < space_fe->n_dofs_per_cell(); ++j) {
-            local_matrix(i, j) += gamma * invW_scale * // gamma * (1/h)
-                                  space_fe->shape_value(i, ref_q) * // phi_i(q)
-                                  space_fe->shape_value(j, ref_q) *
-                                  JxW; // phi_j(q)
+        const auto pic = immersed_particle_handler.particles_in_cell(cell);
+        Assert(pic.begin() == particle, ExcInternalError());
+        for (const auto &p : pic) {
+          const Point<spacedim> ref_q = p.get_reference_location();
+          const double JxW = p.get_properties()[0];
+          const double gq = g_for_aug.value(p.get_location());
+
+          for (unsigned int i = 0; i < space_fe->n_dofs_per_cell(); ++i) {
+            const double v_i = space_fe->shape_value(i, ref_q);
+            local_rhs(i) += gamma * invW_scale * v_i * gq * JxW;
+            for (unsigned int j = 0; j < space_fe->n_dofs_per_cell(); ++j) {
+              local_matrix(i, j) += gamma * invW_scale * // gamma * (1/h)
+                                    v_i * space_fe->shape_value(j, ref_q) * JxW;
+            }
           }
         }
+
+        constraints.distribute_local_to_global(
+            local_matrix, background_dof_indices, stiffness_matrix);
+        constraints.distribute_local_to_global(
+            local_rhs, background_dof_indices, embedding_rhs);
+
+        particle = pic.end();
       }
-
-      constraints.distribute_local_to_global(
-          local_matrix, background_dof_indices, stiffness_matrix);
-
-      particle = pic.end();
     }
 
+    // When use_particles_for_augmentation is false, the augmentation has
+    // already been added to stiffness_matrix during assemble_system().
+    std::cout
+        << "Building AMG preconditioner for the augmented stiffness matrix..."
+        << std::endl;
     amg_prec.initialize(stiffness_matrix);
     prec_for_cg = linear_operator(stiffness_matrix, amg_prec);
+    std::cout << "Done." << std::endl;
   }
 
   auto Aug = linear_operator(stiffness_matrix);
@@ -711,55 +803,6 @@ void NitscheLagrangeProblem<dim, spacedim>::solve() {
 
   system_rhs_block.block(0) = embedding_rhs;
   system_rhs_block.block(1) = embedded_rhs;
-
-  // Consistent RHS augmentation.
-  // We assemble it directly via a boundary-face loop on the bulk space (same
-  // pattern used for C), evaluating g at the same quadrature points.
-  {
-    const unsigned int boundary_q =
-        std::max({2u * space_fe->degree + 1u, 2u * multiplier_fe->degree + 1u,
-                  parameters.coupling_quadrature_order});
-    const auto face_quad =
-        make_quadrature<dim>(parameters.mesh_type, boundary_q);
-
-    FEFaceValues<spacedim> fe_face_values(
-        *bulk_mapping, *space_fe, face_quad,
-        update_values | update_quadrature_points | update_JxW_values);
-
-    const unsigned int n_bulk_dofs = space_fe->n_dofs_per_cell();
-    Vector<double> local_rhs(n_bulk_dofs);
-    std::vector<types::global_dof_index> bulk_dof_indices(n_bulk_dofs);
-    std::vector<double> g_values(face_quad.size());
-
-    ManufacturedDirichlet<spacedim> manufactured_g;
-    const Function<spacedim> &g_for_rhs =
-        parameters.use_manufactured_solution
-            ? static_cast<const Function<spacedim> &>(manufactured_g)
-            : static_cast<const Function<spacedim> &>(g_function);
-
-    for (const auto &surface_cell : boundary_dh.active_cell_iterators()) {
-      const auto bulk_face = surface_to_volume_map.at(surface_cell);
-      const auto &owner = face_to_bulk_cell.at(bulk_face);
-      const auto &bulk_cell = owner.first;
-      const unsigned int bulk_face_no = owner.second;
-
-      fe_face_values.reinit(bulk_cell, bulk_face_no);
-      g_for_rhs.value_list(fe_face_values.get_quadrature_points(), g_values);
-
-      local_rhs = 0;
-      for (unsigned int q = 0; q < face_quad.size(); ++q) {
-        const double JxW = fe_face_values.JxW(q);
-        const double gq = g_values[q];
-        for (unsigned int i = 0; i < n_bulk_dofs; ++i)
-          local_rhs(i) +=
-              gamma * invW_scale * fe_face_values.shape_value(i, q) * gq * JxW;
-      }
-
-      bulk_cell->get_dof_indices(bulk_dof_indices);
-      constraints.distribute_local_to_global(local_rhs, bulk_dof_indices,
-                                             system_rhs_block.block(0));
-    }
-  }
 
   SolverCG<Vector<double>> solver_lagrangian(inner_solver_control);
   auto A_inv = inverse_operator(Aug, solver_lagrangian,

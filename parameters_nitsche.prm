@@ -6,13 +6,14 @@ subsection Nitsche Lagrange<2,3>
   set Bulk space finite element degree      = 1
   set Use discontinuous multiplier space    = true
   set Multiplier finite element degree      = 0
-  set Name of the grid                      = hyper_cube #from_file # #hyper_ball
+  set Name of the grid                      = hyper_cube #from_file #hyper_ball
   set Arguments for the grid                = 0 : 1.: false #0.0, 0.0 : 1.0 : true
-  set Name of the external grid file        = horse.msh#stanford-bunny.msh #homer.msh #popcorn3D.msh #idealized_lv.msh
-  set Scale factor for the external grid    = 100. #1e-3
-  set Number of refinement cycles           = 6
+  set Name of the external grid file        = #homer.msh #nefertiti.msh #cow.msh #happy_buddha.msh #beetle.msh #stanford-bunny.msh #popcorn3D.msh #horse.msh #idealized_lv.msh
+  set Scale factor for the external grid    = 1. #1e-2 #1e-3
+  set Number of refinement cycles           = 8
   set Verbosity level                       = 4
   set Mesh type                             = hex # hex | simplex
+  set Use particles to impose constraints   = false
   set Use manufactured solution             = false
 
 
@@ -25,7 +26,7 @@ subsection Nitsche Lagrange<2,3>
     # Semicolon-separated formulas for the function components. Supports
     # standard operations, functions `sin`, `cos`, etc., and conditionals
     # `if(x>0, 1, -1)`.
-    set Function expression = x+y #10*(x + y) #x+y #0 #if(x>0.5, -1, 1) #sin(x)+y #0.
+    set Function expression = x+y+z #10*(x + y) #x+y #0 #if(x>0.5, -1, 1) #sin(x)+y #0.
 
     # Names of the independent variables, separated by commas.
     set Variable names      = x,y,z,t
