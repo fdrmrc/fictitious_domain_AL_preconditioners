@@ -9,6 +9,7 @@ subsection Nitsche Lagrange<2,3>
   set Name of the grid                      = from_file #hyper_ball
   set Arguments for the grid                = 0 : 1.: false #0.0, 0.0 : 1.0 : true
   set Name of the external grid file        = idealized_lv.msh
+  set Scale factor for the external grid    = 1e-3
   set Number of refinement cycles           = 3
   set Verbosity level                       = 4
   set Use manufactured solution             = false

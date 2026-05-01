@@ -113,6 +113,7 @@ public:
     unsigned int verbosity_level = 4;
     bool use_discontinuous_multiplier = false;
     std::string name_external_grid = "idealized_lv.msh";
+    double scale_factor = 1;
 
     // If true, ignore the user-provided right-hand side and Dirichlet data
     // and use the hardcoded manufactured solution  u(x,y) = sin(pi x) sin(pi y)
@@ -202,6 +203,7 @@ NitscheLagrangeProblem<dim, spacedim>::Parameters::Parameters()
   add_parameter("Multiplier finite element degree",
                 multiplier_finite_element_degree);
   add_parameter("Name of the external grid file", name_external_grid);
+  add_parameter("Scale factor for the external grid", scale_factor);
   add_parameter("Coupling quadrature order", coupling_quadrature_order);
   add_parameter("Verbosity level", verbosity_level);
   add_parameter(
@@ -259,7 +261,7 @@ void NitscheLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
     AssertThrow(input_file, ExcMessage("Could not open grid file"));
     grid_in.read_msh(input_file);
     space_grid.refine_global(extra_refinements);
-    GridTools::scale(1e-3, space_grid);
+    GridTools::scale(parameters.scale_factor, space_grid);
   } else {
     GridGenerator::generate_from_name_and_arguments(
         space_grid, parameters.name_of_grid, parameters.arguments_for_grid);
