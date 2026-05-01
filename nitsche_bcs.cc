@@ -110,6 +110,7 @@ public:
     unsigned int multiplier_finite_element_degree = 1;
     unsigned int coupling_quadrature_order = 3;
     unsigned int verbosity_level = 4;
+    bool use_discontinuous_multiplier = false;
 
     // If true, ignore the user-provided right-hand side and Dirichlet data
     // and use the hardcoded manufactured solution  u(x,y) = sin(pi x) sin(pi y)
@@ -194,6 +195,8 @@ NitscheLagrangeProblem<dim, spacedim>::Parameters::Parameters()
   add_parameter("Arguments for the grid", arguments_for_grid);
   add_parameter("Bulk space finite element degree",
                 bulk_space_finite_element_degree);
+  add_parameter("Use discontinuous multiplier space",
+                use_discontinuous_multiplier);
   add_parameter("Multiplier finite element degree",
                 multiplier_finite_element_degree);
   add_parameter("Coupling quadrature order", coupling_quadrature_order);
@@ -282,8 +285,13 @@ void NitscheLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
   embedding_rhs.reinit(space_dh.n_dofs());
 
   // Multiplier DoFs on the boundary mesh.
-  multiplier_fe = std::make_unique<FE_Q<dim, spacedim>>(
-      parameters.multiplier_finite_element_degree);
+  if (parameters.use_discontinuous_multiplier == true)
+    multiplier_fe = std::make_unique<FE_DGQ<dim, spacedim>>(
+        parameters.multiplier_finite_element_degree);
+  else // continuous
+    multiplier_fe = std::make_unique<FE_Q<dim, spacedim>>(
+        parameters.multiplier_finite_element_degree);
+
   boundary_dh.reinit(*boundary_grid);
   boundary_dh.distribute_dofs(*multiplier_fe);
 
