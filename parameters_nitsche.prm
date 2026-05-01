@@ -1,14 +1,15 @@
 # Listing of Parameters
 # ---------------------
-subsection Nitsche Lagrange<1,2>
+subsection Nitsche Lagrange<2,3>
   set Coupling quadrature order             = 3
-  set Initial space refinement              = 3
+  set Initial space refinement              = 0
   set Bulk space finite element degree      = 1
   set Use discontinuous multiplier space    = true
-  set Multiplier finite element degree      = 0 #0
-  set Name of the grid                      = hyper_cube #hyper_ball
+  set Multiplier finite element degree      = 0 #1
+  set Name of the grid                      = from_file #hyper_ball
   set Arguments for the grid                = 0 : 1.: false #0.0, 0.0 : 1.0 : true
-  set Number of refinement cycles           = 5
+  set Name of the external grid file        = idealized_lv.msh
+  set Number of refinement cycles           = 3
   set Verbosity level                       = 4
   set Use manufactured solution             = false
 
@@ -22,10 +23,10 @@ subsection Nitsche Lagrange<1,2>
     # Semicolon-separated formulas for the function components. Supports
     # standard operations, functions `sin`, `cos`, etc., and conditionals
     # `if(x>0, 1, -1)`.
-    set Function expression = x^2+y^2 #if(x>0.5, -1, 1) #sin(x)+y #0.
+    set Function expression = 10*(x + y) #x+y #0 #if(x>0.5, -1, 1) #sin(x)+y #0.
 
     # Names of the independent variables, separated by commas.
-    set Variable names      = x,y,t
+    set Variable names      = x,y,z,t
   end
 
   subsection Inner solver control
@@ -55,7 +56,7 @@ subsection Nitsche Lagrange<1,2>
     # Semicolon-separated formulas for the function components. Supports
     # standard operations, functions `sin`, `cos`, etc., and conditionals
     # `if(x>0, 1, -1)`.
-    set Function expression = 1.     # default: 0
+    set Function expression = 10.     # default: 0
 
     # Names of the independent variables, separated by commas.
     set Variable names      = x,y,t

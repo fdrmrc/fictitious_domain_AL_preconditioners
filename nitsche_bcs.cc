@@ -25,6 +25,7 @@
 #include <deal.II/fe/mapping_q1.h>
 
 #include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/grid_in.h>
 #include <deal.II/grid/grid_tools.h>
 #include <deal.II/grid/tria.h>
 
@@ -111,6 +112,7 @@ public:
     unsigned int coupling_quadrature_order = 3;
     unsigned int verbosity_level = 4;
     bool use_discontinuous_multiplier = false;
+    std::string name_external_grid = "idealized_lv.msh";
 
     // If true, ignore the user-provided right-hand side and Dirichlet data
     // and use the hardcoded manufactured solution  u(x,y) = sin(pi x) sin(pi y)
@@ -199,6 +201,7 @@ NitscheLagrangeProblem<dim, spacedim>::Parameters::Parameters()
                 use_discontinuous_multiplier);
   add_parameter("Multiplier finite element degree",
                 multiplier_finite_element_degree);
+  add_parameter("Name of the external grid file", name_external_grid);
   add_parameter("Coupling quadrature order", coupling_quadrature_order);
   add_parameter("Verbosity level", verbosity_level);
   add_parameter(
@@ -248,9 +251,20 @@ void NitscheLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
   // Rebuild the bulk grid from scratch each cycle
   static unsigned int extra_refinements = 0;
   space_grid.clear();
-  GridGenerator::generate_from_name_and_arguments(
-      space_grid, parameters.name_of_grid, parameters.arguments_for_grid);
-  space_grid.refine_global(parameters.initial_refinement + extra_refinements);
+
+  if (parameters.name_of_grid == "from_file") {
+    GridIn<spacedim> grid_in;
+    grid_in.attach_triangulation(space_grid);
+    std::ifstream input_file(parameters.name_external_grid);
+    AssertThrow(input_file, ExcMessage("Could not open grid file"));
+    grid_in.read_msh(input_file);
+    space_grid.refine_global(extra_refinements);
+    GridTools::scale(1e-3, space_grid);
+  } else {
+    GridGenerator::generate_from_name_and_arguments(
+        space_grid, parameters.name_of_grid, parameters.arguments_for_grid);
+    space_grid.refine_global(parameters.initial_refinement + extra_refinements);
+  }
   ++extra_refinements;
 
   stiffness_matrix.clear();
@@ -770,8 +784,8 @@ int main(int argc, char **argv) {
 
     Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
 
-    constexpr unsigned int dim = 1;
-    constexpr unsigned int spacedim = 2;
+    constexpr unsigned int dim = 2;
+    constexpr unsigned int spacedim = 3;
 
     NitscheLagrangeProblem<dim, spacedim>::Parameters parameters;
     NitscheLagrangeProblem<dim, spacedim> problem(parameters);
