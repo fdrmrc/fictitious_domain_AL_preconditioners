@@ -55,8 +55,8 @@
 #include <fstream>
 #include <iostream>
 
-#include <augmented_lagrangian_preconditioner.h>
-#include <utilities.h>
+#include "augmented_lagrangian_preconditioner.h"
+#include "utilities.h"
 
 namespace NitscheBCs {
 using namespace dealii;
@@ -146,6 +146,8 @@ public:
     // and use the hardcoded manufactured solution  u(x,y) = sin(pi x) sin(pi y)
     // on (0,1)^2,
     bool use_manufactured_solution = false;
+
+    bool iterative_inversion_mass_matrix = false;
 
     bool initialized = false;
   };
@@ -252,6 +254,11 @@ NitscheLagrangeProblem<dim, spacedim>::Parameters::Parameters()
       "If true, override the right-hand side and Dirichlet data with the "
       "hardcoded manufactured solution u = sin(pi x) sin(pi y) on the unit "
       "square, and report L2/H1 errors plus convergence rates.");
+  add_parameter(
+      "Iterative inversion mass matrix", iterative_inversion_mass_matrix,
+      "If true, invert the boundary mass matrix (used inside the Schur "
+      "preconditioner) iteratively with CG + Jacobi, instead of factorizing "
+      "it with UMFPACK.");
 
   parse_parameters_call_back.connect([&]() -> void { initialized = true; });
 }
@@ -703,10 +710,29 @@ void NitscheLagrangeProblem<dim, spacedim>::solve() {
 
   // Zero (1,1) block: (multiplier,multiplier)
   const auto Zero = null_operator(Ct * C);
+
+  // Inversion of the boundary mass matrix M, used inside the Schur
+  // preconditioner. Two options:
+  //  - direct (UMFPACK),
+  //  - iterative (CG + Jacobi)
   SparseDirectUMFPACK M_inv_umfpack;
-  std::cout << "Factorizing mass matrix on multiplier space..." << std::endl;
-  M_inv_umfpack.initialize(boundary_mass_matrix);
-  std::cout << "Done." << std::endl;
+  PreconditionJacobi<SparseMatrix<double>> M_jacobi;
+  ReductionControl mass_solver_control(1000, 1.e-12, 1.e-10, false, false);
+  SolverCG<Vector<double>> mass_cg(mass_solver_control);
+  LinearOperator<Vector<double>, Vector<double>> invM;
+  if (parameters.iterative_inversion_mass_matrix) {
+    std::cout << "Setting up CG + Jacobi for the multiplier mass matrix..."
+              << std::endl;
+    M_jacobi.initialize(boundary_mass_matrix);
+    invM = inverse_operator(linear_operator(boundary_mass_matrix), mass_cg,
+                            M_jacobi);
+    std::cout << "Done." << std::endl;
+  } else {
+    std::cout << "Factorizing mass matrix on multiplier space..." << std::endl;
+    M_inv_umfpack.initialize(boundary_mass_matrix);
+    invM = linear_operator(boundary_mass_matrix, M_inv_umfpack);
+    std::cout << "Done." << std::endl;
+  }
 
   // Surface and bulk mappings are stored as members; reuse them here.
   const Mapping<dim, spacedim> &embedded_mapping = *surf_mapping;
@@ -809,7 +835,6 @@ void NitscheLagrangeProblem<dim, spacedim>::solve() {
   SolverCG<Vector<double>> solver_lagrangian(inner_solver_control);
   auto A_inv = inverse_operator(Aug, solver_lagrangian,
                                 prec_for_cg); //! linear solver augmented
-  auto invM = linear_operator(boundary_mass_matrix, M_inv_umfpack);
   //  invW = (1/h) * M^{-1}, used both as the Schur preconditioner
   // (-gamma * invW) and to build the augmentation/RHS terms.
   auto invW = invW_scale * invM;
@@ -950,8 +975,8 @@ int main(int argc, char **argv) {
 
     Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
 
-    constexpr unsigned int dim = 2;
-    constexpr unsigned int spacedim = 3;
+    constexpr unsigned int dim = 1;
+    constexpr unsigned int spacedim = 2;
 
     NitscheLagrangeProblem<dim, spacedim>::Parameters parameters;
     NitscheLagrangeProblem<dim, spacedim> problem(parameters);

@@ -1,21 +1,22 @@
 # Listing of Parameters
 # ---------------------
-subsection Nitsche Lagrange<2,3>
+# subsection Nitsche Lagrange<2,3>
+subsection Nitsche Lagrange<1,2>
   set Coupling quadrature order             = 3
-  set Initial space refinement              = 0
+  set Initial space refinement              = 4
   set Bulk space finite element degree      = 1
-  set Use discontinuous multiplier space    = true
+  set Use discontinuous multiplier space    = true #true
   set Multiplier finite element degree      = 0
   set Name of the grid                      = hyper_cube #from_file #hyper_ball
   set Arguments for the grid                = 0 : 1.: false #0.0, 0.0 : 1.0 : true
-  set Name of the external grid file        = #homer.msh #nefertiti.msh #cow.msh #happy_buddha.msh #beetle.msh #stanford-bunny.msh #popcorn3D.msh #horse.msh #idealized_lv.msh
-  set Scale factor for the external grid    = 1. #1e-2 #1e-3
-  set Number of refinement cycles           = 8
+  set Name of the external grid file        = lucy.msh #lion.msh #homer.msh #stanford-bunny.msh #nefertiti.msh #cow.msh #happy_buddha.msh #beetle.msh #popcorn3D.msh #horse.msh #idealized_lv.msh
+  set Scale factor for the external grid    = 1 #1e-2 #1e-3
+  set Number of refinement cycles           = 6
   set Verbosity level                       = 4
   set Mesh type                             = hex # hex | simplex
   set Use particles to impose constraints   = false
   set Use manufactured solution             = false
-
+  set Iterative inversion mass matrix       = false
 
   subsection Dirichlet boundary data
     # Symbolic constants for the function expression, in the form
@@ -26,10 +27,10 @@ subsection Nitsche Lagrange<2,3>
     # Semicolon-separated formulas for the function components. Supports
     # standard operations, functions `sin`, `cos`, etc., and conditionals
     # `if(x>0, 1, -1)`.
-    set Function expression = x+y+z #10*(x + y) #x+y #0 #if(x>0.5, -1, 1) #sin(x)+y #0.
+    set Function expression = x+y #10*(x + y) #x+y #0 #if(x>0.5, -1, 1) #sin(x)+y #0.
 
     # Names of the independent variables, separated by commas.
-    set Variable names      = x,y,z,t
+    set Variable names      = x,y,t
   end
 
   subsection Inner solver control
