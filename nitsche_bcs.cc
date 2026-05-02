@@ -55,8 +55,8 @@
 #include <fstream>
 #include <iostream>
 
-#include "augmented_lagrangian_preconditioner.h"
-#include "utilities.h"
+#include <augmented_lagrangian_preconditioner.h>
+#include <utilities.h>
 
 namespace NitscheBCs {
 using namespace dealii;
@@ -327,13 +327,14 @@ void NitscheLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
   face_to_bulk_cell.clear();
   surface_to_volume_map.clear();
 
-  // Extract the boundary mesh on the bulk grid. For hypercube meshes we use
-  // GridGenerator::extract_boundary_mesh, which already returns the surface
-  // cell -> bulk face map. That function is hardcoded for tensor-product
-  // cells (faces with 4 vertices in 3d) and does not support simplex bulk
-  // meshes, so for simplex grids we build the surface triangulation and
-  // associated map manually.
+  // Extract the boundary mesh on the bulk grid. With newer deal.II versions,
+  // extract_boundary_mesh supports also simplex meshes
+
   boundary_grid = std::make_unique<Triangulation<dim, spacedim>>();
+#if DEAL_II_VERSION_GTE(9, 9, 0)
+  surface_to_volume_map =
+      GridGenerator::extract_boundary_mesh(space_grid, *boundary_grid);
+#else
   if (is_hex_mesh(parameters.mesh_type)) {
     surface_to_volume_map =
         GridGenerator::extract_boundary_mesh(space_grid, *boundary_grid);
@@ -384,6 +385,7 @@ void NitscheLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
       ++idx;
     }
   }
+#endif
 
   // Bulk DoFs and bulk mapping
   if (is_hex_mesh(parameters.mesh_type)) {
