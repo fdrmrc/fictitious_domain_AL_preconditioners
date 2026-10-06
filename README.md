@@ -1,11 +1,15 @@
 # Augmented Lagrangian-based preconditioners for Fictitious Domain solvers
 
-This repository contains application codes demonstrating *Augmented-Lagrangian*-based preconditioners for Fictitious Domain-type solvers. They
-are based on the [deal.II library](https://www.dealii.org). All problems are meant to run both in 2D and 3D.
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23198150.svg)](https://doi.org/10.5281/zenodo.23198150)
 
+This repository contains application codes demonstrating augmented
+Lagrangian-based preconditioners for fictitious domain solvers, based on the
+[deal.II library](https://www.dealii.org).
+
+## Citation
 
 If you use this code in your research, please cite: [*Scalable augmented Lagrangian preconditioners for fictitious domain problems*](https://www.sciencedirect.com/science/article/pii/S0045782525007947)
-```
+```bibtex
 @article{BENZI2026118522,
 title = {Scalable augmented Lagrangian preconditioners for fictitious domain problems},
 journal = {Computer Methods in Applied Mechanics and Engineering},
@@ -18,9 +22,9 @@ author = {Michele Benzi and Marco Feder and Luca Heltai and Federica Mugnaioni},
 keywords = {Preconditioning, Iterative solvers, Fictitious domain method, Non-matching meshes, Finite element method}
 }
 ```
-or the following preprint
+or the following preprint (to appear in CAMWA)
 [*Augmented Lagrangian preconditioners for fictitious domain formulations of elliptic interface problems*](https://arxiv.org/abs/2603.12993)
-```
+```bibtex
 @misc{benzi2026augmentedlagrangianpreconditionersfictitious,
       title={Augmented Lagrangian preconditioners for fictitious domain formulations of elliptic interface problems}, 
       author={Michele Benzi and Marco Feder and Luca Heltai and Federica Mugnaioni},
@@ -33,49 +37,66 @@ or the following preprint
 ```
 
 
+## License
+
+The code in this repository is licensed under the
+[GNU General Public License, version 3 only](LICENSE) (`GPL-3.0-only`).
+
 ## Prerequisites
 
-We require:
-- **cmake** version greater than 2.8.
+The examples require:
+- **CMake** version >= 3.13.4.
 - One of the following compilers:
   -  **gcc** version  >= 11.4.0
   -  **clang** version >= 15
 - **openMPI** version  >= 4.0.3
 - **Trilinos** version >= 14.4.0
-- **deal.II** version 9.7 (current master branch)
-- **UMFPACK** (usually already bundled with deal.II)
+- **deal.II** version 9.7 (the CMake configuration accepts version >= 9.6.0).
+- **p4est**, **muparser**, and **UMFPACK**.
 
+deal.II must be configured with `DEAL_II_WITH_TRILINOS`,
+`DEAL_II_WITH_P4EST`, `DEAL_II_WITH_MUPARSER`, and `DEAL_II_WITH_UMFPACK`
+enabled.
 
-## Compiling and running the examples 
-Assuming deal.II is installed on your machine and meets the requirements above, all is required to do is:
+## Building
+
+With deal.II installed and configured as above:
 
 ```bash
-git clone git@github.com:fdrmrc/fictitious_domain_AL_preconditioners.git
-cd fictitious_domain_AL_preconditioners/
-mkdir build
-cd build/
-cmake -DDEAL_II_DIR=/path/to/deal.II ..
-make -j<N>
+git clone https://github.com/fdrmrc/fictitious_domain_AL_preconditioners.git
+cd fictitious_domain_AL_preconditioners && mkdir build &&
+cmake  build -DDEAL_II_DIR=/path/to/deal.II && make -j 4
 ```
-being ```N``` is the number of jobs you want to use to compile. If successfull, this generates the following example applications, which are
-employing Fictitious Domain methodologies:
 
-* **immersed_laplace**  
-  Solves the Laplace equation with an internal constraint imposed on an immersed domain of co-dimension one. Parameter files can be found
-  in the `prms/` folder.
+Replace `/path/to/deal.II` with your installation path and adjust `4` to the
+desired number of build jobs. The executables are generated in `build/`:
 
-* **stokes_immersed_boundary**  
-Stokes problem with an immersed body of co-dimension one.
-
-* **elliptic_interface**  
-  Elliptic interface problem with jump in coefficients. The solid, immersed, domain is assumeted to be of co-dimension 0.
-
+| Executable | Problem | Parameter files |
+| --- | --- | --- |
+| `immersed_laplace` | Laplace equation with an internal constraint on a codimension-one immersed domain | [parameters/](parameters/) |
+| `stokes_immersed_boundary` | Stokes problem with a codimension-one immersed body | [parameters_stokes.prm](parameters_stokes.prm), [parameters_stokes_3d.prm](parameters_stokes_3d.prm) |
+| `elliptic_interface` | Scalar elliptic interface problem with a jump in coefficients | [parameters_elliptic_interface/](parameters_elliptic_interface/) |
+| `elliptic_interface_elasticity` | Elasticity interface problem with different material properties | [elasticity.prm](parameters_elliptic_interface/elasticity.prm) |
+| `nitsche_bcs` | Boundary constraints imposed using Lagrange multipliers | [parameters_nitsche.prm](parameters_nitsche.prm) |
 
 
 
+## Customizing a run
 
+Copy the appropriate parameter file and pass the copy to the executable. For example, useful settings within `subsection Elliptic Interface Problem` include:
 
+- `Grid generation`: background and immersed geometries.
+- `Refinement and remeshing`: initial refinements and `Refinemented cycles`.
+  Reduce these values for a smaller test run.
+- `AL preconditioner`: classical or modified AL formulation, mass-inverse
+  approximation, etc.
+- `Inner solver control` and `Outer solver control`: solver tolerances and
+  iteration limits.
+- `Output directory`: destination for outputs that use this setting.
 
+Both applications write the resolved parameters to `used_parameters.prm` in
+the working directory, overwriting it on subsequent runs. Some mesh outputs
+are also written directly to the working directory.
 
 
 ## Authors and Contact
@@ -85,4 +106,3 @@ This repository is developed and maintained by:
 - [Federica Mugnaioni](https://numpi.dm.unipi.it/people/federica-mugnaioni/) ([@federica-mugnaioni](https://github.com/federica-mugnaioni)), Numerical Analysis Group, Pisa - Scuola Normale Superiore, Pisa, IT
 
 For inquiries or special requests, you can either contact the authors by email or open an issue.
-
