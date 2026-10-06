@@ -36,7 +36,7 @@ subsection Elliptic Interface Problem
     set Use exact mass inverse in augmented block = false
     # Use diagonal approximation for the inverse (squared) of the immersed
     # mass matrix.
-    set Use diagonal inverse           = false
+    set Use diagonal inverse           = true#false
 
     # Use the modified AL preconditioner. If false, the classical AL
     # preconditioner is used.
