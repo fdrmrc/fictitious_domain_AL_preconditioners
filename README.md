@@ -46,7 +46,7 @@ The code in this repository is licensed under the
 
 The examples require:
 - **CMake** version >= 3.13.4.
-- One of the following compilers:
+- One of the following compilers (with C++ 17):
   -  **gcc** version  >= 11.4.0
   -  **clang** version >= 15
 - **openMPI** version  >= 4.0.3

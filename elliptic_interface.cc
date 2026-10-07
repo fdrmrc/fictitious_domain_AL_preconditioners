@@ -12,7 +12,9 @@
 #include <deal.II/base/utilities.h>
 #include <deal.II/dofs/dof_tools.h>
 #include <deal.II/fe/fe.h>
+#include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_q_bubbles.h>
 #include <deal.II/fe/fe_system.h>
 #include <deal.II/fe/mapping_q1.h>
 #include <deal.II/grid/grid_generator.h>
@@ -39,6 +41,7 @@
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/numerics/vector_tools_common.h>
 
+#include <algorithm>
 #include <cmath>
 #include <exception>
 #include <filesystem>
@@ -145,6 +148,8 @@ public:
 
   unsigned int immersed_space_finite_element_degree = 1;
 
+  bool use_bubbles = false;
+
   unsigned int coupling_quadrature_order = 3;
 
   unsigned int verbosity_level = 10;
@@ -206,6 +211,10 @@ ProblemParameters<dim>::ProblemParameters()
 
   add_parameter("FE degree immersed", immersed_space_finite_element_degree, "",
                 this->prm, Patterns::Integer(1));
+
+  add_parameter("Use bubbles", use_bubbles,
+                "Use Q1 for the background, FE_Q_Bubbles(1) for the immersed "
+                "solution, and FE_DGQ(0) for the multiplier.");
 
   add_parameter("Coupling quadrature order", coupling_quadrature_order);
 
@@ -347,6 +356,8 @@ public:
 
   void assemble();
 
+  void assemble_immersed_coupling();
+
   // Returns the number of outer iterations.
   unsigned int solve();
 
@@ -363,16 +374,20 @@ private:
 
   DoFHandler<dim> dof_handler_bg;
   DoFHandler<dim> dof_handler_fg;
+  DoFHandler<dim> dof_handler_multiplier;
   FE_Q<dim> fe_bg;
-  FE_Q<dim> fe_fg;
+  std::unique_ptr<FiniteElement<dim>> fe_fg;
+  std::unique_ptr<FiniteElement<dim>> fe_multiplier;
 
   AffineConstraints<double> constraints_bg;
   AffineConstraints<double> constraints_fg;
+  AffineConstraints<double> constraints_multiplier;
 
   SparsityPattern stiffness_sparsity_fg;
   SparsityPattern stiffness_sparsity_bg;
   SparsityPattern coupling_sparsity;
   SparsityPattern mass_sparsity_fg;
+  SparsityPattern mass_sparsity_multiplier;
 
   SparseMatrix<Number> stiffness_matrix_bg;
   SparseMatrix<Number> stiffness_matrix_fg;
@@ -383,7 +398,9 @@ private:
                                          // modifiedAL with h-scaled mass
   SparseMatrix<Number> coupling_matrix;
 
+  // Cross mass: immersed rows, multiplier columns.
   SparseMatrix<Number> mass_matrix_fg;
+  SparseMatrix<Number> mass_matrix_multiplier;
 
   BlockVector<Number> system_rhs_block;
   BlockVector<Number> system_solution_block;
@@ -399,11 +416,30 @@ template <int dim>
 EllipticInterfaceDLM<dim>::EllipticInterfaceDLM(
     const ProblemParameters<dim> &prm)
     : parameters(prm), dof_handler_bg(tria_bg), dof_handler_fg(tria_fg),
+      dof_handler_multiplier(tria_fg),
       fe_bg(parameters.background_space_finite_element_degree),
-      fe_fg(parameters.immersed_space_finite_element_degree),
       computing_timer(MPI_COMM_WORLD, std::cout,
                       TimerOutput::every_call_and_summary,
                       TimerOutput::wall_times) {
+  if (parameters.use_bubbles) {
+    AssertThrow(parameters.background_space_finite_element_degree == 1 &&
+                    parameters.immersed_space_finite_element_degree == 1,
+                ExcMessage("Use bubbles requires FE degree background = 1 "
+                           "and FE degree immersed = 1."));
+    AssertThrow(!parameters.use_operator_form,
+                ExcMessage("Use operator version assembles an unprojected "
+                           "mass term and is not compatible with the Q0 "
+                           "multiplier. Set Use operator version = false "
+                           "when Use bubbles = true."));
+    fe_fg = std::make_unique<FE_Q_Bubbles<dim>>(1);
+    fe_multiplier = std::make_unique<FE_DGQ<dim>>(0);
+  } else {
+    fe_fg = std::make_unique<FE_Q<dim>>(
+        parameters.immersed_space_finite_element_degree);
+    fe_multiplier = std::make_unique<FE_Q<dim>>(
+        parameters.immersed_space_finite_element_degree);
+  }
+
   // First, do some sanity checks on the parameters.
   AssertThrow(parameters.beta_1 > 0., ExcMessage("Beta_1 must be positive."));
   AssertThrow(parameters.beta_1 > 0., ExcMessage("Beta_2 must be positive."));
@@ -510,10 +546,12 @@ template <int dim> void EllipticInterfaceDLM<dim>::system_setup() {
   TimerOutput::Scope t(computing_timer, "System setup");
 
   dof_handler_bg.distribute_dofs(fe_bg);
-  dof_handler_fg.distribute_dofs(fe_fg);
+  dof_handler_fg.distribute_dofs(*fe_fg);
+  dof_handler_multiplier.distribute_dofs(*fe_multiplier);
 
   constraints_bg.clear();
   constraints_fg.clear();
+  constraints_multiplier.clear();
 
   if (parameters.do_convergence_study)
     VectorTools::interpolate_boundary_values(
@@ -525,6 +563,7 @@ template <int dim> void EllipticInterfaceDLM<dim>::system_setup() {
 
   constraints_bg.close();
   constraints_fg.close();
+  constraints_multiplier.close();
 
   setup_stiffness_matrix(dof_handler_bg, constraints_bg, stiffness_sparsity_bg,
                          stiffness_matrix_bg);
@@ -538,17 +577,36 @@ template <int dim> void EllipticInterfaceDLM<dim>::system_setup() {
   setup_stiffness_matrix(dof_handler_fg, constraints_fg, stiffness_sparsity_fg,
                          stiffness_matrix_fg_plus_scaled_M);
 
-  mass_matrix_fg.reinit(stiffness_sparsity_fg);
+  if (parameters.use_bubbles) {
+    DynamicSparsityPattern dsp(dof_handler_fg.n_dofs(),
+                               dof_handler_multiplier.n_dofs());
+    DoFTools::make_sparsity_pattern(dof_handler_fg, dof_handler_multiplier,
+                                    dsp);
+    mass_sparsity_fg.copy_from(dsp);
+    mass_matrix_fg.reinit(mass_sparsity_fg);
+    setup_stiffness_matrix(dof_handler_multiplier, constraints_multiplier,
+                           mass_sparsity_multiplier, mass_matrix_multiplier);
+  } else {
+    mass_matrix_fg.reinit(stiffness_sparsity_fg);
+    // copy_from() requires both matching mass matrices to share this pattern.
+    mass_matrix_multiplier.reinit(stiffness_sparsity_fg);
+  }
 
   system_rhs_block.reinit(3);
   system_rhs_block.block(0).reinit(dof_handler_bg.n_dofs());
   system_rhs_block.block(1).reinit(dof_handler_fg.n_dofs());
-  system_rhs_block.block(2).reinit(dof_handler_fg.n_dofs());
+  system_rhs_block.block(2).reinit(dof_handler_multiplier.n_dofs());
+  system_rhs_block.collect_sizes();
 
   system_solution_block.reinit(system_rhs_block);
 
   std::cout << "N DoF background: " << dof_handler_bg.n_dofs() << std::endl;
   std::cout << "N DoF immersed: " << dof_handler_fg.n_dofs() << std::endl;
+  std::cout << "N DoF multiplier: " << dof_handler_multiplier.n_dofs()
+            << std::endl;
+  std::cout << "Finite element spaces: " << fe_bg.get_name() << ", "
+            << fe_fg->get_name() << ", " << fe_multiplier->get_name()
+            << std::endl;
 
   std::cout << "==============================================================="
                "========================="
@@ -573,16 +631,50 @@ template <int dim> void EllipticInterfaceDLM<dim>::setup_coupling() {
 
   {
     DynamicSparsityPattern dsp(dof_handler_bg.n_dofs(),
-                               dof_handler_fg.n_dofs());
+                               dof_handler_multiplier.n_dofs());
     NonMatching::create_coupling_sparsity_pattern(
-        dof_handler_bg, dof_handler_fg, quad, dsp, constraints_bg,
-        ComponentMask(), ComponentMask(), mapping, mapping, constraints_fg);
+        dof_handler_bg, dof_handler_multiplier, quad, dsp, constraints_bg,
+        ComponentMask(), ComponentMask(), mapping, mapping,
+        constraints_multiplier);
     coupling_sparsity.copy_from(dsp);
     coupling_matrix.reinit(coupling_sparsity);
 
     NonMatching::create_coupling_mass_matrix(
-        dof_handler_bg, dof_handler_fg, quad, coupling_matrix, constraints_bg,
-        ComponentMask(), ComponentMask(), mapping, mapping, constraints_fg);
+        dof_handler_bg, dof_handler_multiplier, quad, coupling_matrix,
+        constraints_bg, ComponentMask(), ComponentMask(), mapping, mapping,
+        constraints_multiplier);
+  }
+}
+
+template <int dim>
+void EllipticInterfaceDLM<dim>::assemble_immersed_coupling() {
+  const QGauss<dim> quad(std::max(fe_fg->degree, fe_multiplier->degree) + 1);
+  FEValues<dim> values_fg(*fe_fg, quad, update_values | update_JxW_values);
+  FEValues<dim> values_multiplier(*fe_multiplier, quad, update_values);
+  const unsigned int n_fg = fe_fg->n_dofs_per_cell();
+  const unsigned int n_multiplier = fe_multiplier->n_dofs_per_cell();
+  FullMatrix<double> cell_matrix(n_fg, n_multiplier);
+  std::vector<types::global_dof_index> indices_fg(n_fg);
+  std::vector<types::global_dof_index> indices_multiplier(n_multiplier);
+
+  for (const auto &cell : dof_handler_fg.active_cell_iterators()) {
+    const auto multiplier_cell =
+        cell->as_dof_handler_iterator(dof_handler_multiplier);
+    values_fg.reinit(cell);
+    values_multiplier.reinit(multiplier_cell);
+    cell_matrix = 0.;
+    for (const unsigned int q : values_fg.quadrature_point_indices())
+      for (unsigned int i = 0; i < n_fg; ++i)
+        for (unsigned int j = 0; j < n_multiplier; ++j)
+          cell_matrix(i, j) += values_fg.shape_value(i, q) *
+                               values_multiplier.shape_value(j, q) *
+                               values_fg.JxW(q);
+
+    cell->get_dof_indices(indices_fg);
+    multiplier_cell->get_dof_indices(indices_multiplier);
+    constraints_fg.distribute_local_to_global(
+        cell_matrix, indices_fg, constraints_multiplier, indices_multiplier,
+        mass_matrix_fg);
   }
 }
 
@@ -648,7 +740,7 @@ template <int dim> void EllipticInterfaceDLM<dim>::assemble() {
   // immersed matrix A2 = (beta_2 - beta) (grad u,grad v)
   // The rhs changes if we want to do a convergence study.
   if (parameters.do_convergence_study)
-    assemble_subsystem(fe_fg, dof_handler_fg, constraints_fg,
+    assemble_subsystem(*fe_fg, dof_handler_fg, constraints_fg,
                        stiffness_matrix_fg, system_rhs_block.block(1),
                        0., // 0, no mass matrix
                        parameters.beta_2 -
@@ -656,17 +748,30 @@ template <int dim> void EllipticInterfaceDLM<dim>::assemble() {
                        Functions::ConstantFunction<dim>{
                            0.}); // rhs value for convergence study
   else // read rhs values (constants) from parameters file
-    assemble_subsystem(fe_fg, dof_handler_fg, constraints_fg,
+    assemble_subsystem(*fe_fg, dof_handler_fg, constraints_fg,
                        stiffness_matrix_fg, system_rhs_block.block(1),
                        0., // 0, no mass matrix
                        parameters.beta_2 -
                            parameters.beta_1,   // only jump beta_2 - beta
                        parameters.f_2_minus_f); // rhs value, f2-f
 
-  //  mass matrix immersed
-  assemble_subsystem(fe_fg, dof_handler_fg, constraints_fg, mass_matrix_fg,
-                     system_rhs_block.block(2), 1., 0.,
-                     Functions::ConstantFunction<dim>{0.});
+  if (parameters.use_bubbles) {
+    assemble_immersed_coupling();
+    assemble_subsystem(*fe_multiplier, dof_handler_multiplier,
+                       constraints_multiplier, mass_matrix_multiplier,
+                       system_rhs_block.block(2), 1., 0.,
+                       Functions::ZeroFunction<dim>());
+  } else {
+    assemble_subsystem(*fe_fg, dof_handler_fg, constraints_fg, mass_matrix_fg,
+                       system_rhs_block.block(2), 1., 0.,
+                       Functions::ConstantFunction<dim>{0.});
+    mass_matrix_multiplier.copy_from(mass_matrix_fg);
+  }
+
+  std::cout << "Background-multiplier coupling: " << coupling_matrix.m()
+            << " x " << coupling_matrix.n() << "\n"
+            << "Immersed-multiplier coupling: " << mass_matrix_fg.m() << " x "
+            << mass_matrix_fg.n() << std::endl;
 }
 
 void output_double_number(double input, const std::string &text) {
@@ -680,9 +785,9 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
   auto A_omega1 = linear_operator(stiffness_matrix_bg);
   auto A_omega2 = linear_operator(stiffness_matrix_fg);
   auto M = linear_operator(mass_matrix_fg);
-  auto NullF = null_operator(linear_operator(stiffness_matrix_bg));
-  auto NullS = null_operator(linear_operator(mass_matrix_fg));
-  auto NullCouplin = null_operator(linear_operator(coupling_matrix));
+  auto Mt = parameters.use_bubbles ? transpose_operator(M) : M;
+  auto multiplier_mass = linear_operator(mass_matrix_multiplier);
+  auto NullCouplin = null_operator(multiplier_mass);
   auto Ct = linear_operator(coupling_matrix);
   auto C = transpose_operator(Ct);
 
@@ -690,8 +795,8 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
   // on the the choice, we either approximate it using the diagonal of the
   // mass matrix (squaring the entries) or we use the direct inversion of the
   // mass matrix provided by UMFPACK.
-  auto invM = null_operator(M);
-  auto invW = null_operator(M);
+  auto invM = null_operator(multiplier_mass);
+  auto invW = null_operator(multiplier_mass);
 
   // Depending on the choice of the preconditioner, we either use the inverse of
   // the mass matrix or the inverse of the squared mass matrix. In both cases,
@@ -702,38 +807,41 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
   Vector<double> inverse_diag_mass;
   if (parameters.use_h_scaled_mass || parameters.use_operator_form) {
 
-    if (parameters.use_diagonal_inverse) {
-      inverse_diag_mass.reinit(mass_matrix_fg.m());
+    if (parameters.use_diagonal_inverse || parameters.use_bubbles) {
+      inverse_diag_mass.reinit(mass_matrix_multiplier.m());
       for (unsigned int i = 0; i < inverse_diag_mass.size(); ++i)
-        inverse_diag_mass[i] = 1.0 / mass_matrix_fg.diag_element(i);
+        inverse_diag_mass[i] = 1.0 / mass_matrix_multiplier.diag_element(i);
+    }
 
+    if (parameters.use_diagonal_inverse) {
       diag_inverse.reinit(inverse_diag_mass);
       invW = linear_operator(diag_inverse);
     } else {
       // factorize
       {
         TimerOutput::Scope t(computing_timer, "Factorize mass matrix");
-        M_inv_umfpack.initialize(
-            mass_matrix_fg); // inverse immersed mass matrix
+        M_inv_umfpack.initialize(mass_matrix_multiplier);
       }
-      invM = linear_operator(mass_matrix_fg, M_inv_umfpack);
+      invM = linear_operator(mass_matrix_multiplier, M_inv_umfpack);
       invW = invM; //(!)
     }
 
   } else {
+    std::cout << "Using algebraic approach" << std::endl;
     // Use M^2
+    if (parameters.use_diagonal_inverse || parameters.use_bubbles)
+      compute_inverse_diagonal_mass_squared(mass_matrix_multiplier,
+                                            inverse_diag_mass);
     if (parameters.use_diagonal_inverse) {
-      compute_inverse_diagonal_mass_squared(mass_matrix_fg, inverse_diag_mass);
       diag_inverse.reinit(inverse_diag_mass);
       invW = linear_operator(diag_inverse);
     } else {
       // Use direct inversion
       {
         TimerOutput::Scope t(computing_timer, "Factorize mass matrix");
-        M_inv_umfpack.initialize(
-            mass_matrix_fg); // inverse immersed mass matrix
+        M_inv_umfpack.initialize(mass_matrix_multiplier);
       }
-      invM = linear_operator(mass_matrix_fg, M_inv_umfpack);
+      invM = linear_operator(mass_matrix_multiplier, M_inv_umfpack);
       invW = invM * invM;
     }
   }
@@ -807,8 +915,8 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
     A11_aug = A_omega1 + gamma_1 * Ct * invW * C;
   }
 
-  auto A22_aug = A_omega2 + gamma_2 * M * invW * M;
-  auto A12_aug = -gamma_1 * Ct * invW * M;
+  auto A22_aug = A_omega2 + gamma_2 * M * invW * Mt;
+  auto A12_aug = -gamma_1 * Ct * invW * Mt;
   // Next one is just transpose_operator(A12_aug);
   auto A21_aug = -gamma_2 * M * invW * C;
 
@@ -816,7 +924,7 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
   auto system_operator = block_operator<3, 3, BlockVector<double>>(
       {{{{A11_aug, A12_aug, Ct}},
         {{A21_aug, A22_aug, -1. * M}},
-        {{C, -1. * M, NullCouplin}}}}); // augmented the 2x2 top left block!
+        {{C, -1. * Mt, NullCouplin}}}}); // augmented the 2x2 top left block!
 
   // Initialize AMG preconditioners for inner solves
   // The first one is for the augmented (1,1) block, while the second one is for
@@ -831,23 +939,29 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
                                      parameters.beta_1, amg_prec_A11);
 
   // Initialize AMG prec for the A_2 augmented block
-  if (parameters.use_h_scaled_mass == true ||
-      parameters.use_operator_form == true) {
-    // in this case, the augmented A_2 block is A_omega2 + gamma * h^{-2}
-    // M
-    assemble_subsystem(fe_fg, dof_handler_fg, constraints_fg,
-                       stiffness_matrix_fg_plus_scaled_M,
-                       system_rhs_block.block(2), gamma_2,
-                       parameters.beta_2 - parameters.beta_1,
-                       Functions::ConstantFunction<dim>{0.});
+  if (parameters.use_bubbles) {
+    build_AMG_augmented_block_scalar(
+        dof_handler_fg, mass_matrix_fg, stiffness_matrix_fg, inverse_diag_mass,
+        mass_sparsity_fg, constraints_fg, gamma_2,
+        parameters.beta_2 - parameters.beta_1, amg_prec_A22, true);
   } else {
-    // immersed matrix (beta_2 - beta) (grad u,grad v) + gamma*Id
-    stiffness_matrix_fg_plus_id.copy_from(stiffness_matrix_fg);
-    // Add gamma*Id to A_2
-    for (unsigned int i = 0; i < stiffness_matrix_fg_plus_id.m(); ++i)
-      stiffness_matrix_fg_plus_id.add(i, i, gamma_2);
+    if (parameters.use_h_scaled_mass == true ||
+        parameters.use_operator_form == true) {
+      // in this case, the augmented A_2 block is A_omega2 + gamma * h^{-2} M
+      assemble_subsystem(*fe_fg, dof_handler_fg, constraints_fg,
+                         stiffness_matrix_fg_plus_scaled_M,
+                         system_rhs_block.block(2), gamma_2,
+                         parameters.beta_2 - parameters.beta_1,
+                         Functions::ConstantFunction<dim>{0.});
+      amg_prec_A22.initialize(stiffness_matrix_fg_plus_scaled_M);
+    } else {
+      // immersed matrix (beta_2 - beta) (grad u,grad v) + gamma*Id
+      stiffness_matrix_fg_plus_id.copy_from(stiffness_matrix_fg);
+      for (unsigned int i = 0; i < stiffness_matrix_fg_plus_id.m(); ++i)
+        stiffness_matrix_fg_plus_id.add(i, i, gamma_2);
+      amg_prec_A22.initialize(stiffness_matrix_fg_plus_id);
+    }
   }
-  amg_prec_A22.initialize(stiffness_matrix_fg_plus_scaled_M);
   std::cout << "Initialized AMG for A_2" << std::endl;
 
   if (parameters.export_matrices_for_eig_analysis) {
@@ -855,7 +969,9 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
     export_to_matlab_csv(stiffness_matrix_bg, "A_DLFDM.csv");
     export_to_matlab_csv(stiffness_matrix_fg, "A_2_DLFDM.csv");
     export_to_matlab_csv(coupling_matrix, "Ct_DLFDM.csv");
-    export_to_matlab_csv(mass_matrix_fg, "M_DLFDM.csv");
+    export_to_matlab_csv(mass_matrix_multiplier, "M_DLFDM.csv");
+    if (parameters.use_bubbles)
+      export_to_matlab_csv(mass_matrix_fg, "B_DLFDM.csv");
     std::cout << "Exporting matrices: done." << std::endl;
   }
 
@@ -898,7 +1014,8 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
           inverse_operator(A22_aug, *solver_lagrangian_scalar, amg_prec_A22);
 
       EllipticInterfacePreconditioners::BlockTriangularALPreconditionerModified
-          preconditioner_AL(C, M, invW, gamma_1, A11_aug_inv, A22_aug_inv);
+          preconditioner_AL(C, M, invW, gamma_1, A11_aug_inv, A22_aug_inv,
+                            parameters.use_bubbles);
 
       system_rhs_block.block(2) = 0; // last row of the rhs is 0
 
@@ -929,6 +1046,8 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
 
       auto AMG_A1 = linear_operator(stiffness_matrix_bg, amg_prec_A11);
       auto AMG_A2 = linear_operator(stiffness_matrix_fg, amg_prec_A22);
+      auto NullF = null_operator(A12_aug);
+      auto NullS = null_operator(A21_aug);
       // Define preconditioner for the augmented block
       auto prec_aug = block_operator<2, 2, BlockVector<double>>(
           {{{{AMG_A1, NullF}}, {{NullS, AMG_A2}}}});
@@ -950,7 +1069,7 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
     // Finally, distribute the constraints
     constraints_bg.distribute(system_solution_block.block(0));
     constraints_fg.distribute(system_solution_block.block(1));
-    constraints_fg.distribute(system_solution_block.block(2));
+    constraints_multiplier.distribute(system_solution_block.block(2));
   }
 
   n_outer_iterations = parameters.outer_solver_control.last_step();
@@ -959,6 +1078,9 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
   convergence_table.add_value("cells", tria_bg.n_active_cells());
   convergence_table.add_value("DoF background", dof_handler_bg.n_dofs());
   convergence_table.add_value("DoF immersed", dof_handler_fg.n_dofs());
+  if (parameters.use_bubbles)
+    convergence_table.add_value("DoF multiplier",
+                                dof_handler_multiplier.n_dofs());
   convergence_table.add_value("gamma (AL)", gamma_1);
   if (parameters.use_modified_AL_preconditioner)
     convergence_table.add_value("gamma2 (AL)", gamma_2);
@@ -977,15 +1099,15 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
                            system_solution_block.block(0));
     difference_constraints *= -1;
 
-    mass_matrix_fg.vmult_add(difference_constraints,
-                             system_solution_block.block(1));
+    mass_matrix_fg.Tvmult_add(difference_constraints,
+                              system_solution_block.block(1));
 
     std::cout << "L infty norm of constraints residual "
               << difference_constraints.linfty_norm() << "\n";
 
     // Estimate condition number
     std::cout << "Estimate condition number of CCt using CG" << std::endl;
-    Vector<double> v_eig(system_solution_block.block(1));
+    Vector<double> v_eig(system_solution_block.block(2));
     SolverControl solver_control_eig(v_eig.size(), 1e-12, false);
     SolverCG<Vector<double>> solver_eigs(solver_control_eig);
 
@@ -1064,7 +1186,8 @@ void EllipticInterfaceDLM<dim>::output_results(
     DataOut<dim> data_out_fg;
     data_out_fg.attach_dof_handler(dof_handler_fg);
     data_out_fg.add_data_vector(system_solution_block.block(1), "u2");
-    data_out_fg.add_data_vector(system_solution_block.block(2), "lambda");
+    data_out_fg.add_data_vector(dof_handler_multiplier,
+                                system_solution_block.block(2), "lambda");
     data_out_fg.build_patches();
     std::ofstream output_fg(parameters.output_directory + "/" +
                             "solution-immersed-" + std::to_string(ref_cycle) +
