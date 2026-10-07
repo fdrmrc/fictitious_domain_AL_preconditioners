@@ -172,12 +172,14 @@ public:
       const LinearOperator<Vector<double>> M_,
       const LinearOperator<Vector<double>> invW_, const double gamma_,
       const LinearOperator<Vector<double>> A11_inv_,
-      const LinearOperator<Vector<double>> A22_inv_) {
+      const LinearOperator<Vector<double>> A22_inv_,
+      const bool rectangular_coupling = false) {
     A11_inv = A11_inv_;
     A22_inv = A22_inv_;
     C = C_;
     Ct = transpose_operator(C);
     M = M_;
+    Mt = rectangular_coupling ? transpose_operator(M) : M;
     invW = invW_;
     gamma = gamma_;
   }
@@ -224,7 +226,7 @@ public:
 
     dst.block(2) = -gamma * invW * lambda;
     dst.block(1) = A22_inv * (u2 + M * dst.block(2));
-    dst.block(0) = A11_inv * (u + gamma * Ct * invW * M * dst.block(1) -
+    dst.block(0) = A11_inv * (u + gamma * Ct * invW * Mt * dst.block(1) -
                               Ct * dst.block(2));
   }
 
@@ -233,6 +235,7 @@ public:
   LinearOperator<Vector<double>> C;
   LinearOperator<Vector<double>> Ct;
   LinearOperator<Vector<double>> M;
+  LinearOperator<Vector<double>> Mt;
   LinearOperator<Vector<double>> invW;
   double gamma;
 };

@@ -51,7 +51,8 @@ The examples require:
   -  **clang** version >= 15
 - **openMPI** version  >= 4.0.3
 - **Trilinos** version >= 14.4.0
-- **deal.II** version 9.7 (the CMake configuration accepts version >= 9.6.0).
+- **deal.II** version **9.8 or newer**. The tested version is **9.8.0-pre**
+  (a development build of deal.II 9.8).
 - **p4est**, **muparser**, and **UMFPACK**.
 
 deal.II must be configured with `DEAL_II_WITH_TRILINOS`,
@@ -80,8 +81,6 @@ desired number of build jobs. The executables are generated in `build/`:
 | `nitsche_bcs` | Boundary constraints imposed using Lagrange multipliers | [parameters_nitsche.prm](parameters_nitsche.prm) |
 
 
-
-## Customizing a run
 
 Copy the appropriate parameter file and pass the copy to the executable. For example, useful settings within `subsection Elliptic Interface Problem` include:
 

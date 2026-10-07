@@ -2,13 +2,13 @@
 # ---------------------
 subsection Elliptic Interface Problem
 set Beta_1                             = 1
-set Beta_2                             = 10
+set Beta_2                             = 1e3
 set Coupling quadrature order          = 3
 set Export matrices for eigs-analysis  = false
 set FE degree background               = 1
 set FE degree immersed                 = 1
 set Homogeneous Dirichlet boundary ids = 0,1,2,3
-set Output directory                   = ./paper_data/ideal
+set Output directory                   = ./paper_data/modified
  # Using analytical solution for immersed circle (f = f_2 = 1)
 set Perform convergence study          = false
  # Check condition number of C*Ct after solve().
@@ -52,8 +52,8 @@ set gamma solid                    = 1e-2
   subsection Grid generation
 set Background grid generator           = hyper_cube
 set Background grid generator arguments = -1.: 1: true
-set Immersed grid generator             = hyper_cube#hyper_ball
-set Immersed grid generator arguments   = -0.14: 0.47: true#0.,0. : 0.3 : false
+set Immersed grid generator             = hyper_ball#hyper_cube
+set Immersed grid generator arguments   = 0.,0. : 0.3 : false#-0.14: 0.47: true
   end
 
   subsection Inner solver control
@@ -99,7 +99,7 @@ set Stop gamma      = 1
 set Initial background refinement = 4
 
    # Initial number of refinements used for the immersed domain Gamma.
-set Initial immersed refinement   = 2
+set Initial immersed refinement   = 0#2
 
    # Number of refinement cycles to perform convergence studies.
 set Refinemented cycles           = 8

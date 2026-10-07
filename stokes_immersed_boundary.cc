@@ -2,6 +2,7 @@
 #include <deal.II/base/exceptions.h>
 #include <deal.II/base/function.h>
 #include <deal.II/base/logstream.h>
+#include <deal.II/base/observer_pointer.h>
 #include <deal.II/base/parameter_acceptor.h>
 #include <deal.II/base/parsed_function.h>
 #include <deal.II/base/patterns.h>
@@ -88,8 +89,8 @@ public:
   void vmult(Vector<double> &dst, const Vector<double> &src) const;
 
 private:
-  const SmartPointer<const MatrixType> matrix;
-  const SmartPointer<const PreconditionerType> preconditioner;
+  const ObserverPointer<const MatrixType> matrix;
+  const ObserverPointer<const PreconditionerType> preconditioner;
 };
 
 template <class MatrixType, class PreconditionerType>
@@ -117,8 +118,8 @@ public:
   void vmult(Vector<double> &dst, const Vector<double> &src) const;
 
 private:
-  const SmartPointer<const BlockSparseMatrix<double>> system_matrix;
-  const SmartPointer<
+  const ObserverPointer<const BlockSparseMatrix<double>> system_matrix;
+  const ObserverPointer<
       const InverseMatrix<SparseMatrix<double>, PreconditionerType>>
       A_inverse;
 

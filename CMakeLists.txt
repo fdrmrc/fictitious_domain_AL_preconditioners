@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.13.4)
 project(AL_preconditioning)
 
 # Find deal.II library
-find_package(deal.II 9.6.0
+find_package(deal.II 9.8.0
   HINTS ${deal.II_DIR} ${DEAL_II_DIR} ../ ../../ $ENV{DEAL_II_DIR}
 )
 
