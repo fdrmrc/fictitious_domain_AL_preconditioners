@@ -1,6 +1,6 @@
 # Augmented Lagrangian-based preconditioners for Fictitious Domain solvers
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23207501.svg)](https://zenodo.org/records/23207501)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23208420.svg)](https://zenodo.org/records/23208420)
 
 This repository contains application codes demonstrating augmented
 Lagrangian-based preconditioners for fictitious domain solvers, based on the
