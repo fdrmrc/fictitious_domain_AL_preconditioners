@@ -760,7 +760,7 @@ void initialize_particles(
     const DoFHandler<dim_immersed, spacedim> &immersed_dh,
     const Mapping<spacedim> &background_mapping,
     const Mapping<dim_immersed, spacedim> &immersed_mapping,
-    const QGauss<dim_immersed> &quadrature) {
+    const Quadrature<dim_immersed> &quadrature) {
 
   Assert(solid_particle_handler.n_global_particles() == 0,
          ExcMessage(

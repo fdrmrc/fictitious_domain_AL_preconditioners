@@ -24,6 +24,7 @@
 #include <deal.II/lac/block_linear_operator.h>
 #include <deal.II/lac/block_vector.h>
 #include <deal.II/lac/diagonal_matrix.h>
+#include <deal.II/lac/lapack_full_matrix.h>
 #include <deal.II/lac/linear_operator.h>
 #include <deal.II/lac/linear_operator_tools.h>
 #include <deal.II/lac/precondition.h>
@@ -40,12 +41,15 @@
 #include <deal.II/numerics/vector_tools_common.h>
 
 #include <cmath>
+#include <complex>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <string>
+#include <vector>
 
 // We include the header file where AL preconditioners are implemented
 #include "augmented_lagrangian_preconditioner.h"
@@ -174,6 +178,10 @@ public:
 
   bool export_matrices_for_eig_analysis = false;
 
+  // If true, estimate the condition number of the preconditioned system via an
+  // additional GMRES solve.
+  bool estimate_condition_number = false;
+
   // AL parameter. Its magnitude depends on which AL preconditioner (original
   // vs. modified AL) is chosen. We define it as mutable since with modified AL
   // its value may change upon mesh refinement.
@@ -270,6 +278,11 @@ ProblemParameters<dim>::ProblemParameters()
                   "modified AL variant.");
     add_parameter("gamma fluid", gamma_AL_background);
     add_parameter("gamma solid", gamma_AL_immersed);
+    add_parameter("Estimate condition number", estimate_condition_number,
+                  "Estimate the condition number of the preconditioned system "
+                  "via an additional GMRES solve. Meaningful only when the "
+                  "preconditioner is (approximately) linear, e.g. with fixed "
+                  "inner iterations.");
     add_parameter("Verbosity level", verbosity_level);
   }
   leave_subsection();
@@ -842,11 +855,18 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
                        Functions::ConstantFunction<dim>{0.});
   } else {
     // immersed matrix (beta_2 - beta) (grad u,grad v) + gamma*Id
-    stiffness_matrix_fg_plus_id.copy_from(stiffness_matrix_fg);
-    // Add gamma*Id to A_2
-    for (unsigned int i = 0; i < stiffness_matrix_fg_plus_id.m(); ++i)
-      stiffness_matrix_fg_plus_id.add(i, i, gamma_2);
+    // stiffness_matrix_fg_plus_id.copy_from(stiffness_matrix_fg);
+    // // Add gamma*Id to A_2
+    // for (unsigned int i = 0; i < stiffness_matrix_fg_plus_id.m(); ++i)
+    //   stiffness_matrix_fg_plus_id.add(i, i, gamma_2);
+
+    assemble_subsystem(fe_fg, dof_handler_fg, constraints_fg,
+                       stiffness_matrix_fg_plus_scaled_M,
+                       system_rhs_block.block(2), gamma_2,
+                       parameters.beta_2 - parameters.beta_1,
+                       Functions::ConstantFunction<dim>{0.});
   }
+
   amg_prec_A22.initialize(stiffness_matrix_fg_plus_scaled_M);
   std::cout << "Initialized AMG for A_2" << std::endl;
 
@@ -863,6 +883,72 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
   data_fgmres.max_basis_size = 50;
   SolverFGMRES<BlockVector<Number>> solver_fgmres(
       parameters.outer_solver_control, data_fgmres);
+
+  // Optional helper: estimate the condition number (and extreme eigenvalues) of
+  // the preconditioned system. GMRES (as opposed to FGMRES) can estimate the
+  // spectrum of the preconditioned operator from its Hessenberg matrix, so we
+  // run an additional right-preconditioned GMRES solve for this purpose only.
+  // This is meaningful only when the preconditioner is (approximately) linear,
+  // e.g. when a fixed number of inner iterations is used.
+  double estimated_condition_number = std::numeric_limits<double>::quiet_NaN();
+  auto estimate_condition_number = [&](const auto &preconditioner) {
+    if (!parameters.estimate_condition_number)
+      return;
+
+    std::cout << "Estimating condition number of the preconditioned system "
+                 "(additional GMRES solve)..."
+              << std::endl;
+
+    SolverControl solver_control_condition_number(
+        parameters.outer_solver_control.max_steps(),
+        parameters.outer_solver_control.tolerance());
+
+    typename SolverGMRES<BlockVector<Number>>::AdditionalData data_gmres;
+    data_gmres.max_basis_size = 50;
+    data_gmres.right_preconditioning = true;
+    SolverGMRES<BlockVector<Number>> solver_gmres(
+        solver_control_condition_number, data_gmres);
+
+    // The (non per-iteration) condition-number signal is fired twice by GMRES
+    // upon convergence (once at the end of the restart cycle and once at the
+    // final step), so we guard against printing the same estimate twice.
+    bool condition_number_printed = false;
+    solver_gmres.connect_condition_number_slot(
+        [&](const double condition_number) {
+          if (condition_number_printed)
+            return;
+          condition_number_printed = true;
+          estimated_condition_number = condition_number;
+          std::cout << "Estimated condition number of the preconditioned "
+                       "system: "
+                    << condition_number << std::endl;
+        },
+        /*every_iteration=*/false);
+
+    solver_gmres.connect_eigenvalues_slot(
+        [](const std::vector<std::complex<double>> &eigenvalues) {
+          double min_modulus = std::numeric_limits<double>::max();
+          double max_modulus = 0.;
+          for (const auto &eig : eigenvalues) {
+            min_modulus = std::min(min_modulus, std::abs(eig));
+            max_modulus = std::max(max_modulus, std::abs(eig));
+          }
+          std::cout << "Estimated |eigenvalue| range of the preconditioned "
+                       "system: ["
+                    << min_modulus << ", " << max_modulus << "]" << std::endl;
+        },
+        /*every_iteration=*/false);
+
+    BlockVector<Number> condition_number_solution = system_solution_block;
+    condition_number_solution = 0.;
+    try {
+      solver_gmres.solve(system_operator, condition_number_solution,
+                         system_rhs_block, preconditioner);
+    } catch (const std::exception &e) {
+      std::cerr << "GMRES for condition number estimation did not converge: "
+                << e.what() << std::endl;
+    }
+  };
 
   // Wrap the actual FGMRES solve in another scope in order to discard
   // setup-cost.
@@ -905,6 +991,8 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
       solver_fgmres.solve(system_operator, system_solution_block,
                           system_rhs_block, preconditioner_AL);
 
+      estimate_condition_number(preconditioner_AL);
+
     } else {
       // Check that gamma is not too small. We force also gamma2 to be equal
       // to gamma if we use the ideal variant.
@@ -946,6 +1034,8 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
       system_rhs_block.block(2) = 0; // last row of the rhs is 0
       solver_fgmres.solve(system_operator, system_solution_block,
                           system_rhs_block, preconditioner_AL);
+
+      estimate_condition_number(preconditioner_AL);
     }
     // Finally, distribute the constraints
     constraints_bg.distribute(system_solution_block.block(0));
@@ -963,13 +1053,18 @@ template <int dim> unsigned int EllipticInterfaceDLM<dim>::solve() {
   if (parameters.use_modified_AL_preconditioner)
     convergence_table.add_value("gamma2 (AL)", gamma_2);
   convergence_table.add_value("Outer iterations", n_outer_iterations);
+  if (parameters.estimate_condition_number) {
+    convergence_table.add_value("Condition number", estimated_condition_number);
+    convergence_table.set_precision("Condition number", 3);
+    convergence_table.set_scientific("Condition number", true);
+  }
 
   std::cout << "Solved in " << n_outer_iterations << " iterations"
             << (parameters.outer_solver_control.last_step() < 10 ? "  " : " ")
             << "\n";
 
-  // Do some sanity checks: Check the constraints residual and the condition
-  // number of CCt.
+  // Do some sanity checks: check the constraints residual and that the
+  // coupling matrix C has full row rank.
   if (parameters.do_sanity_checks) {
     Vector<Number> difference_constraints = system_solution_block.block(2);
 
