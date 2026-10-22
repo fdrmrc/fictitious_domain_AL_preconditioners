@@ -52,11 +52,17 @@ deal_ii_setup_target(babuska_problem)
 deal_ii_setup_target(variational_elliptic_interface)
 deal_ii_setup_target(variational_immersed_elasticity)
 
+# Grids directory
+set(AL_GRIDS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/grids")
+foreach(_target immersed_laplace babuska_problem)
+  target_compile_definitions(${_target} PRIVATE AL_GRIDS_DIR="${AL_GRIDS_DIR}")
+endforeach()
+
 message(STATUS "
 ****************************************************************************************************
 *                                                                                                    *
-*  Welcome to the 'Augmented Lagrangian Preconditioner for fictitious domain Discretizations' suite! *
-*  A collection of examples for fictitious-domain discretizations.                                   *
+*  Welcome to the 'Augmented Lagrangian preconditioners for fictitious domain discretizations' suite!*
+*  A collection of preconditioners for fictitious-domain discretizations.                            *
 *                                                                                                    *
 *  Run the following commands from the repository root:                                              *
 *                                                                                                    *

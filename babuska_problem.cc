@@ -453,8 +453,11 @@ void BabuskaProblem<dim, spacedim>::setup_grids_and_dofs() {
   if (parameters.name_of_grid == "from_file") {
     GridIn<spacedim> grid_in;
     grid_in.attach_triangulation(space_grid);
-    std::ifstream input_file(parameters.name_external_grid);
-    AssertThrow(input_file, ExcMessage("Could not open grid file"));
+    const std::string grid_file =
+        resolve_grid_file(parameters.name_external_grid);
+    std::ifstream input_file(grid_file);
+    AssertThrow(input_file,
+                ExcMessage("Could not open grid file: " + grid_file));
     grid_in.read_msh(input_file);
     n_bulk_refinements = extra_refinements + k_off;
     space_grid.refine_global(n_bulk_refinements);
@@ -517,8 +520,11 @@ void BabuskaProblem<dim, spacedim>::setup_grids_and_dofs() {
     if (parameters.name_of_grid == "from_file") {
       GridIn<spacedim> grid_in;
       grid_in.attach_triangulation(coarse_bulk);
-      std::ifstream input_file(parameters.name_external_grid);
-      AssertThrow(input_file, ExcMessage("Could not open grid file"));
+      const std::string grid_file =
+          resolve_grid_file(parameters.name_external_grid);
+      std::ifstream input_file(grid_file);
+      AssertThrow(input_file,
+                  ExcMessage("Could not open grid file: " + grid_file));
       grid_in.read_msh(input_file);
       coarse_bulk.refine_global(n_coarse_refinements);
       GridTools::scale(parameters.scale_factor, coarse_bulk);

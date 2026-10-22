@@ -18,6 +18,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <string>
 #include <type_traits>
 
 #ifdef DEAL_II_WITH_TRILINOS
@@ -33,6 +35,25 @@
 #include <limits>
 
 using namespace dealii;
+
+// Resolve the path of an external grid file against the `grids/` directory of
+// the source tree, whose location is baked in at configure time through the
+// AL_GRIDS_DIR compile definition. This lets parameter files refer to meshes
+// by bare name (e.g. "my_mesh.msh") and still be found no matter which
+// directory the program is started from.
+//
+// An absolute `filename` is returned unchanged, since appending an absolute
+// path to a base replaces it.
+inline std::string resolve_grid_file(const std::string &filename) {
+  if (filename.empty())
+    return filename;
+
+#ifdef AL_GRIDS_DIR
+  return (std::filesystem::path(AL_GRIDS_DIR) / filename).string();
+#else
+  return filename;
+#endif
+}
 
 double compute_l2_norm_matrix(const SparseMatrix<double> &C,
                               const SparsityPattern &sparsity) {

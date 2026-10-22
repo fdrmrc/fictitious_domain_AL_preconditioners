@@ -398,10 +398,11 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
                            "'Background grid generator' is \"from_file\"."));
     GridIn<spacedim> grid_in;
     grid_in.attach_triangulation(*space_grid);
-    std::ifstream input_file(parameters.external_background_grid_file);
-    AssertThrow(input_file,
-                ExcMessage("Could not open background grid file: " +
-                           parameters.external_background_grid_file));
+    const std::string grid_file =
+        resolve_grid_file(parameters.external_background_grid_file);
+    std::ifstream input_file(grid_file);
+    AssertThrow(input_file, ExcMessage("Could not open background grid file: " +
+                                       grid_file));
     grid_in.read_msh(input_file);
     GridTools::scale(parameters.scale_factor_background, *space_grid);
     space_grid->refine_global(parameters.initial_refinement +
@@ -455,9 +456,11 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
                            "'Embedded grid generator' is \"from_file\"."));
     GridIn<dim, spacedim> grid_in;
     grid_in.attach_triangulation(*embedded_grid);
-    std::ifstream input_file(parameters.external_embedded_grid_file);
+    const std::string grid_file =
+        resolve_grid_file(parameters.external_embedded_grid_file);
+    std::ifstream input_file(grid_file);
     AssertThrow(input_file, ExcMessage("Could not open embedded grid file: " +
-                                       parameters.external_embedded_grid_file));
+                                       grid_file));
     grid_in.read_msh(input_file);
     GridTools::scale(parameters.scale_factor_embedded, *embedded_grid);
     embedded_grid->refine_global(parameters.initial_embedded_refinement +
