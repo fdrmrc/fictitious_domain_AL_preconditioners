@@ -1,3 +1,4 @@
+#include <deal.II/base/convergence_table.h>
 #include <deal.II/base/data_out_base.h>
 #include <deal.II/base/exceptions.h>
 #include <deal.II/base/logstream.h>
@@ -10,10 +11,11 @@
 #include <deal.II/fe/fe.h>
 #include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/fe_q.h>
-#include <deal.II/fe/fe_system.h>
-#include <deal.II/fe/mapping_fe_field.h>
-#include <deal.II/fe/mapping_q_eulerian.h>
+#include <deal.II/fe/fe_simplex_p.h>
+#include <deal.II/fe/mapping_fe.h>
+#include <deal.II/fe/mapping_q1.h>
 #include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/grid_in.h>
 #include <deal.II/grid/grid_out.h>
 #include <deal.II/grid/grid_tools.h>
 #include <deal.II/grid/grid_tools_cache.h>
@@ -39,6 +41,8 @@
 #include <deal.II/numerics/matrix_tools.h>
 #include <deal.II/numerics/vector_tools.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -57,6 +61,22 @@
 
 namespace ImmersedLaplaceSolver {
 using namespace dealii;
+
+// True if the parameter selects tensor-product (quad/hex) cells.
+inline bool is_hex_mesh(const std::string &mesh_type) {
+  return mesh_type == "hex";
+}
+
+// Build a quadrature appropriate for the active mesh type.
+// QGauss is implemented for any positive number of points; QGaussSimplex is
+// only implemented for n_points_1D in {1,2,3,4} so we cap the rule.
+template <int d>
+inline Quadrature<d> make_quadrature(const std::string &mesh_type,
+                                     const unsigned int n) {
+  if (is_hex_mesh(mesh_type))
+    return QGauss<d>(std::max(1u, n));
+  return QGaussSimplex<d>(std::min(4u, std::max(1u, n)));
+}
 
 //  Struct used to store iteration counts
 struct ResultsData {
@@ -77,27 +97,62 @@ public:
 
     unsigned int initial_embedded_refinement = 8;
 
+    unsigned int n_refinement_cycles = 1;
+
     std::list<types::boundary_id> dirichlet_ids{0, 1, 2, 3};
 
     unsigned int embedding_space_finite_element_degree = 1;
 
     unsigned int embedded_space_finite_element_degree = 1;
 
-    unsigned int embedded_configuration_finite_element_degree = 1;
-
     unsigned int coupling_quadrature_order = 3;
 
-    bool use_displacement = false;
-
     unsigned int verbosity_level = 10;
+
+    double augmentation_constant = 1.0;
 
     bool use_operator_form = false;
 
     bool use_diagonal_inverse = false;
 
+    // When true (and 'Use operator version' is true), the (1,1)-block
+    // augmentation is ALSO assembled algebraically as the triple product
+    // K + gamma * C * M^{-1} * C^T, purely to measure and compare its wall
+    // time against the variational (particle) augmentation. Defaults to false.
+    bool compare_algebraic_augmentation = false;
+
     bool initialized = false;
 
+    // Matrix export controls (mirroring the option in elliptic_interface_op).
+    // When enabled, the bare bulk stiffness K, the augmented (1,1)-block
+    // K_aug = K + (c/h) * (M_bulk pulled back from the immersed surface), the
+    // coupling matrix C and the immersed mass matrix M are written to disk as
+    // 1-based (i, j, v) triplet files plus a sentinel size row, one set per
+    // refinement cycle. A small h_cycleNN.txt sidecar records the immersed
+    // cell diameter used to bake gamma into K_aug. Export is restricted to
+    // small problems, both for file size and because the dense inf-sup
+    // analysis driven from the .ipynb is only tractable for moderate sizes.
+    bool export_matrices_for_matlab = false;
+    unsigned int matrix_export_max_dofs = 1500;
+    std::string matrix_export_directory = "immersed_laplace_op_export";
+
     std::string solver = "CG";
+
+    // Grid generation. Either built-in deal.II grid generators (via
+    // GridGenerator::generate_from_name_and_arguments), or external grids
+    // loaded from a .msh file when the name is set to "from_file".
+    std::string name_of_background_grid = "hyper_cube";
+    std::string arguments_for_background_grid = "0.0: 1.0: true";
+    std::string name_of_embedded_grid = "hyper_cube";
+    std::string arguments_for_embedded_grid = "0.0: 1.0: true";
+    std::string external_background_grid_file = "";
+    std::string external_embedded_grid_file = "";
+    double scale_factor_background = 1.0;
+    double scale_factor_embedded = 1.0;
+
+    // Cell type of the background and embedded meshes: "hex" or "simplex".
+    std::string background_mesh_type = "hex";
+    std::string embedded_mesh_type = "hex";
   };
 
   ResultsData results_data;
@@ -129,18 +184,12 @@ private:
   std::unique_ptr<Triangulation<spacedim>> space_grid;
   std::unique_ptr<GridTools::Cache<spacedim, spacedim>> space_grid_tools_cache;
   std::unique_ptr<FiniteElement<spacedim>> space_fe;
+  std::unique_ptr<Mapping<spacedim>> space_mapping;
   std::unique_ptr<DoFHandler<spacedim>> space_dh;
 
   std::unique_ptr<Triangulation<dim, spacedim>> embedded_grid;
   std::unique_ptr<FiniteElement<dim, spacedim>> embedded_fe;
   std::unique_ptr<DoFHandler<dim, spacedim>> embedded_dh;
-
-  std::unique_ptr<FiniteElement<dim, spacedim>> embedded_configuration_fe;
-  std::unique_ptr<DoFHandler<dim, spacedim>> embedded_configuration_dh;
-  Vector<double> embedded_configuration;
-
-  ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>>
-      embedded_configuration_function;
 
   std::unique_ptr<Mapping<dim, spacedim>> embedded_mapping;
 
@@ -153,7 +202,7 @@ private:
   ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>>
       embedding_dirichlet_boundary_function;
 
-  ParameterAcceptorProxy<ReductionControl> schur_solver_control;
+  ParameterAcceptorProxy<ReductionControl> outer_solver_control;
 
   SparsityPattern stiffness_sparsity;
   SparsityPattern stiffness_sparsity_copy;
@@ -181,6 +230,10 @@ private:
 
   TimerOutput monitor;
 
+  ConvergenceTable convergence_table;
+
+  unsigned int last_inner_iters_total = 0;
+
   std::string parameters_filename;
 };
 
@@ -197,9 +250,9 @@ DistributedLagrangeProblem<dim, spacedim>::Parameters::Parameters()
   add_parameter("Local refinements steps near embedded domain",
                 delta_refinement);
 
-  add_parameter("Dirichlet boundary ids", dirichlet_ids);
+  add_parameter("Number of refinement cycles", n_refinement_cycles);
 
-  add_parameter("Use displacement in embedded interface", use_displacement);
+  add_parameter("Dirichlet boundary ids", dirichlet_ids);
 
   add_parameter("Embedding space finite element degree",
                 embedding_space_finite_element_degree);
@@ -207,17 +260,53 @@ DistributedLagrangeProblem<dim, spacedim>::Parameters::Parameters()
   add_parameter("Embedded space finite element degree",
                 embedded_space_finite_element_degree);
 
-  add_parameter("Embedded configuration finite element degree",
-                embedded_configuration_finite_element_degree);
-
   add_parameter("Coupling quadrature order", coupling_quadrature_order);
 
   add_parameter("Verbosity level", verbosity_level);
 
   add_parameter("Solver", solver);
 
+  enter_subsection("Grid generation");
+  {
+    add_parameter("Background grid generator", name_of_background_grid,
+                  "Name of the deal.II built-in grid generator for the "
+                  "background (embedding) grid, or \"from_file\" to load a "
+                  ".msh file specified by 'External background grid file'.");
+    add_parameter("Background grid generator arguments",
+                  arguments_for_background_grid);
+    add_parameter("Embedded grid generator", name_of_embedded_grid,
+                  "Name of the deal.II built-in grid generator for the "
+                  "embedded (immersed) grid, or \"from_file\" to load a "
+                  ".msh file specified by 'External embedded grid file'.");
+    add_parameter("Embedded grid generator arguments",
+                  arguments_for_embedded_grid);
+    add_parameter("External background grid file",
+                  external_background_grid_file,
+                  "Path to the .msh file used when 'Background grid "
+                  "generator' is set to \"from_file\".");
+    add_parameter("External embedded grid file", external_embedded_grid_file,
+                  "Path to the .msh file used when 'Embedded grid generator' "
+                  "is set to \"from_file\".");
+    add_parameter("Scale factor for the external background grid",
+                  scale_factor_background);
+    add_parameter("Scale factor for the external embedded grid",
+                  scale_factor_embedded);
+    add_parameter("Background mesh type", background_mesh_type,
+                  "Cell type used for the background mesh. Either \"hex\" "
+                  "(tensor-product quads/hexes) or \"simplex\" (tris/tets).",
+                  ParameterAcceptor::prm, Patterns::Selection("hex|simplex"));
+    add_parameter("Embedded mesh type", embedded_mesh_type,
+                  "Cell type used for the embedded mesh. Either \"hex\" "
+                  "(tensor-product quads/hexes) or \"simplex\" (tris/tets).",
+                  ParameterAcceptor::prm, Patterns::Selection("hex|simplex"));
+  }
+  leave_subsection();
+
   enter_subsection("AL preconditioner");
   {
+    add_parameter("Augmentation constant", augmentation_constant,
+                  "Constant  used in the augmented Lagrangian preconditioner.");
+
     add_parameter("Use operator version", use_operator_form,
                   "Assemble the augmented (1,1)-block directly as a matrix. If "
                   "false, the augmented (1,1)-block is applied as K + gamma * "
@@ -226,6 +315,30 @@ DistributedLagrangeProblem<dim, spacedim>::Parameters::Parameters()
         "Use diagonal inverse", use_diagonal_inverse,
         "Use diagonal approximation for the inverse (eventually squared) of"
         " the immersed mass matrix in the AL preconditioner.");
+    add_parameter(
+        "Compare algebraic augmentation", compare_algebraic_augmentation,
+        "If true (and 'Use operator version' is true), additionally assemble "
+        "the (1,1)-block augmentation ALGEBRAICALLY as the triple product "
+        "K + gamma * C * M^{-1} * C^T, purely to measure and compare its wall "
+        "time against the variational (particle) augmentation. The algebraic "
+        "result is discarded; only the timer summary is of interest.");
+  }
+  leave_subsection();
+
+  enter_subsection("Matrix export");
+  {
+    add_parameter(
+        "Export matrices for matlab", export_matrices_for_matlab,
+        "If true, dump K, K_aug, C, M (and the immersed h) per refinement "
+        "cycle as 1-based triplet files; only meaningful when 'Use operator "
+        "version' is true so that K_aug is assembled directly.");
+    add_parameter(
+        "Matrix export max DoFs", matrix_export_max_dofs,
+        "Maximum number of embedded (multiplier) DoFs allowed when matrix "
+        "export is enabled; the run aborts on cycles that exceed this size.");
+    add_parameter("Matrix export directory", matrix_export_directory,
+                  "Subdirectory (relative to the working directory) into "
+                  "which the per-cycle triplet files are written.");
   }
   leave_subsection();
 
@@ -235,23 +348,13 @@ DistributedLagrangeProblem<dim, spacedim>::Parameters::Parameters()
 template <int dim, int spacedim>
 DistributedLagrangeProblem<dim, spacedim>::DistributedLagrangeProblem(
     const Parameters &parameters)
-    : parameters(parameters),
-      embedded_configuration_function("Embedded configuration", spacedim),
-      embedding_rhs_function("Embedding rhs function"),
+    : parameters(parameters), embedding_rhs_function("Embedding rhs function"),
       embedded_value_function("Embedded value"),
       embedding_dirichlet_boundary_function(
           "Embedding Dirichlet boundary conditions"),
-      schur_solver_control("Schur solver control"),
+      outer_solver_control("Schur solver control"),
       monitor(std::cout, TimerOutput::summary,
               TimerOutput::cpu_and_wall_times) {
-  embedded_configuration_function.declare_parameters_call_back.connect(
-      []() -> void {
-        ParameterAcceptor::prm.set("Function constants", "R=.3, Cx=.4,Cy=.4");
-
-        ParameterAcceptor::prm.set("Function expression",
-                                   "R*cos(2*pi*x)+Cx; R*sin(2*pi*x)+Cy");
-      });
-
   embedding_rhs_function.declare_parameters_call_back.connect(
       []() -> void { ParameterAcceptor::prm.set("Function expression", "0"); });
 
@@ -261,10 +364,12 @@ DistributedLagrangeProblem<dim, spacedim>::DistributedLagrangeProblem(
   embedding_dirichlet_boundary_function.declare_parameters_call_back.connect(
       []() -> void { ParameterAcceptor::prm.set("Function expression", "0"); });
 
-  schur_solver_control.declare_parameters_call_back.connect([]() -> void {
+  outer_solver_control.declare_parameters_call_back.connect([]() -> void {
     ParameterAcceptor::prm.set("Max steps", "1000");
-    ParameterAcceptor::prm.set("Reduction", "1.e-12");
-    ParameterAcceptor::prm.set("Tolerance", "1.e-12");
+    ParameterAcceptor::prm.set("Tolerance", "1.e-9");
+    ParameterAcceptor::prm.set("Reduction", "1e-12");
+    ParameterAcceptor::prm.set("Log history", "true");
+    ParameterAcceptor::prm.set("Log result", "true");
   });
 }
 
@@ -279,48 +384,113 @@ template <int dim, int spacedim>
 void DistributedLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
   TimerOutput::Scope timer_section(monitor, "Setup grids and dofs");
 
+  // Number of additional global refinements applied to both the background
+  // and the embedded grids in the current cycle. Bumped at the end of each
+  // call so that successive cycles produce progressively finer grids.
+  static unsigned int extra_refinements = 0;
+
+  // ---- Background (embedding) grid ---------------------------------------
   space_grid = std::make_unique<Triangulation<spacedim>>();
 
-  GridGenerator::hyper_cube(*space_grid, 0., 1, true);
+  if (parameters.name_of_background_grid == "from_file") {
+    AssertThrow(!parameters.external_background_grid_file.empty(),
+                ExcMessage("'External background grid file' must be set when "
+                           "'Background grid generator' is \"from_file\"."));
+    GridIn<spacedim> grid_in;
+    grid_in.attach_triangulation(*space_grid);
+    std::ifstream input_file(parameters.external_background_grid_file);
+    AssertThrow(input_file,
+                ExcMessage("Could not open background grid file: " +
+                           parameters.external_background_grid_file));
+    grid_in.read_msh(input_file);
+    GridTools::scale(parameters.scale_factor_background, *space_grid);
+    space_grid->refine_global(parameters.initial_refinement +
+                              extra_refinements);
+  } else {
+    if (is_hex_mesh(parameters.background_mesh_type)) {
+      GridGenerator::generate_from_name_and_arguments(
+          *space_grid, parameters.name_of_background_grid,
+          parameters.arguments_for_background_grid);
+      space_grid->refine_global(parameters.initial_refinement +
+                                extra_refinements);
+    } else {
+      Triangulation<spacedim> hex_grid;
+      GridGenerator::generate_from_name_and_arguments(
+          hex_grid, parameters.name_of_background_grid,
+          parameters.arguments_for_background_grid);
+      hex_grid.refine_global(parameters.initial_refinement + extra_refinements);
+      GridGenerator::convert_hypercube_to_simplex_mesh(hex_grid, *space_grid);
+    }
+  }
 
-  space_grid->refine_global(parameters.initial_refinement);
-  space_grid_tools_cache =
-      std::make_unique<GridTools::Cache<spacedim, spacedim>>(*space_grid);
-
-  std::ofstream out_ext("grid-ext.gnuplot");
-  GridOut grid_out_ext;
-  grid_out_ext.write_gnuplot(*space_grid, out_ext);
-  out_ext.close();
-  std::cout << "External Grid written to grid-ext.gnuplot" << std::endl;
-
-  embedded_grid = std::make_unique<Triangulation<dim, spacedim>>();
-  GridGenerator::hyper_cube(*embedded_grid);
-  embedded_grid->refine_global(parameters.initial_embedded_refinement);
-
-  embedded_configuration_fe = std::make_unique<FESystem<dim, spacedim>>(
-      FE_Q<dim, spacedim>(
-          parameters.embedded_configuration_finite_element_degree) ^
-      spacedim);
-
-  embedded_configuration_dh =
-      std::make_unique<DoFHandler<dim, spacedim>>(*embedded_grid);
-
-  embedded_configuration_dh->distribute_dofs(*embedded_configuration_fe);
-  embedded_configuration.reinit(embedded_configuration_dh->n_dofs());
-
-  VectorTools::interpolate(*embedded_configuration_dh,
-                           embedded_configuration_function,
-                           embedded_configuration);
-
-  if (parameters.use_displacement == true)
-    embedded_mapping =
-        std::make_unique<MappingQEulerian<dim, Vector<double>, spacedim>>(
-            parameters.embedded_configuration_finite_element_degree,
-            *embedded_configuration_dh, embedded_configuration);
+  // Build the background-space mapping early so that GridTools::Cache (used
+  // by NonMatching::create_coupling_*) sees a consistent mapping for both
+  // hex and simplex meshes.
+  if (is_hex_mesh(parameters.background_mesh_type))
+    space_mapping = std::make_unique<MappingQ1<spacedim>>();
   else
-    embedded_mapping =
-        std::make_unique<MappingFEField<dim, spacedim, Vector<double>>>(
-            *embedded_configuration_dh, embedded_configuration);
+    space_mapping =
+        std::make_unique<MappingFE<spacedim>>(FE_SimplexP<spacedim>(1));
+
+  space_grid_tools_cache =
+      std::make_unique<GridTools::Cache<spacedim, spacedim>>(*space_grid,
+                                                             *space_mapping);
+
+  // GridOut::write_gnuplot does not currently support simplex meshes; skip.
+  if (is_hex_mesh(parameters.background_mesh_type) &&
+      space_grid->n_cells() < 1000) {
+    std::ofstream out_ext("grid-ext.gnuplot");
+    GridOut grid_out_ext;
+    grid_out_ext.write_gnuplot(*space_grid, out_ext);
+    out_ext.close();
+    std::cout << "External Grid written to grid-ext.gnuplot" << std::endl;
+  }
+
+  // ---- Embedded (immersed) grid ------------------------------------------
+  embedded_grid = std::make_unique<Triangulation<dim, spacedim>>();
+
+  if (parameters.name_of_embedded_grid == "from_file") {
+    AssertThrow(!parameters.external_embedded_grid_file.empty(),
+                ExcMessage("'External embedded grid file' must be set when "
+                           "'Embedded grid generator' is \"from_file\"."));
+    GridIn<dim, spacedim> grid_in;
+    grid_in.attach_triangulation(*embedded_grid);
+    std::ifstream input_file(parameters.external_embedded_grid_file);
+    AssertThrow(input_file, ExcMessage("Could not open embedded grid file: " +
+                                       parameters.external_embedded_grid_file));
+    grid_in.read_msh(input_file);
+    GridTools::scale(parameters.scale_factor_embedded, *embedded_grid);
+    embedded_grid->refine_global(parameters.initial_embedded_refinement +
+                                 extra_refinements);
+  } else {
+    if (is_hex_mesh(parameters.embedded_mesh_type)) {
+      GridGenerator::generate_from_name_and_arguments(
+          *embedded_grid, parameters.name_of_embedded_grid,
+          parameters.arguments_for_embedded_grid);
+      embedded_grid->refine_global(parameters.initial_embedded_refinement +
+                                   extra_refinements);
+    } else {
+      Triangulation<dim, spacedim> hex_grid;
+      GridGenerator::generate_from_name_and_arguments(
+          hex_grid, parameters.name_of_embedded_grid,
+          parameters.arguments_for_embedded_grid);
+      hex_grid.refine_global(parameters.initial_embedded_refinement +
+                             extra_refinements);
+      GridGenerator::convert_hypercube_to_simplex_mesh(hex_grid,
+                                                       *embedded_grid);
+    }
+  }
+
+  // ---- Embedded mapping --------------------------------------------------
+  // Classical mapping on the embedded grid: MappingQ1 for hex meshes,
+  // MappingFE(FE_SimplexP) for simplex meshes. The embedded grid is taken
+  // as-is from the grid generator / .msh file; no parametric configuration
+  // is applied.
+  if (is_hex_mesh(parameters.embedded_mesh_type))
+    embedded_mapping = std::make_unique<MappingQ1<dim, spacedim>>();
+  else
+    embedded_mapping = std::make_unique<MappingFE<dim, spacedim>>(
+        FE_SimplexP<dim, spacedim>(1));
 
   setup_embedded_dofs();
 
@@ -342,7 +512,10 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
     space_grid->execute_coarsening_and_refinement();
   }
 
-  if (space_grid->n_cells() < 2e6) { // do not dump grid when mesh is too fine
+  if (is_hex_mesh(parameters.background_mesh_type) &&
+      space_grid->n_cells() < 2e6) {
+    // do not dump grid when mesh is too fine; skip for simplex meshes since
+    // GridOut::write_gnuplot is not implemented for them.
     std::ofstream out_refined("grid-refined.gnuplot");
     GridOut grid_out_refined;
     grid_out_refined.write_gnuplot(*space_grid, out_refined);
@@ -361,27 +534,36 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_grids_and_dofs() {
           << embedded_space_maximal_diameter / embedding_space_minimal_diameter
           << std::endl;
 
-  AssertThrow(
-      embedded_space_maximal_diameter < embedding_space_minimal_diameter,
-      ExcMessage("The embedding grid is too refined (or the embedded grid "
-                 "is too coarse). Adjust the parameters so that the minimal"
-                 "grid size of the embedding grid is larger "
-                 "than the maximal grid size of the embedded grid."));
+  // AssertThrow(
+  //     embedded_space_maximal_diameter < embedding_space_minimal_diameter,
+  //     ExcMessage("The embedding grid is too refined (or the embedded grid "
+  //                "is too coarse). Adjust the parameters so that the minimal"
+  //                "grid size of the embedding grid is larger "
+  //                "than the maximal grid size of the embedded grid."));
 
   setup_embedding_dofs();
+
+  ++extra_refinements;
 }
 
 template <int dim, int spacedim>
 void DistributedLagrangeProblem<dim, spacedim>::setup_embedding_dofs() {
   space_dh = std::make_unique<DoFHandler<spacedim>>(*space_grid);
-  space_fe = std::make_unique<FE_Q<spacedim>>(
-      parameters.embedding_space_finite_element_degree);
+  if (is_hex_mesh(parameters.background_mesh_type)) {
+    space_fe = std::make_unique<FE_Q<spacedim>>(
+        parameters.embedding_space_finite_element_degree);
+  } else {
+    space_fe = std::make_unique<FE_SimplexP<spacedim>>(
+        parameters.embedding_space_finite_element_degree);
+  }
   space_dh->distribute_dofs(*space_fe);
 
+  constraints.clear();
   DoFTools::make_hanging_node_constraints(*space_dh, constraints);
   for (const types::boundary_id id : parameters.dirichlet_ids) {
     VectorTools::interpolate_boundary_values(
-        *space_dh, id, embedding_dirichlet_boundary_function, constraints);
+        *space_mapping, *space_dh, id, embedding_dirichlet_boundary_function,
+        constraints);
   }
   constraints.close();
 
@@ -414,12 +596,19 @@ void DistributedLagrangeProblem<dim, spacedim>::setup_embedded_dofs() {
   embedded_dh = std::make_unique<DoFHandler<dim, spacedim>>(*embedded_grid);
 
   if (parameters.embedded_space_finite_element_degree > 0) {
-    // use continuous elements if degree>0
-    embedded_fe = std::make_unique<FE_Q<dim, spacedim>>(
-        parameters.embedded_space_finite_element_degree);
+    // continuous elements if degree>0
+    if (is_hex_mesh(parameters.embedded_mesh_type))
+      embedded_fe = std::make_unique<FE_Q<dim, spacedim>>(
+          parameters.embedded_space_finite_element_degree);
+    else
+      embedded_fe = std::make_unique<FE_SimplexP<dim, spacedim>>(
+          parameters.embedded_space_finite_element_degree);
   } else if (parameters.embedded_space_finite_element_degree == 0) {
-    // otherwise, DG(0) elements for the multiplier
-    embedded_fe = std::make_unique<FE_DGQ<dim, spacedim>>(0);
+    // DG(0) elements for the multiplier
+    if (is_hex_mesh(parameters.embedded_mesh_type))
+      embedded_fe = std::make_unique<FE_DGQ<dim, spacedim>>(0);
+    else
+      embedded_fe = std::make_unique<FE_SimplexDGP<dim, spacedim>>(0);
   } else {
     AssertThrow(false, ExcNotImplemented());
   }
@@ -436,7 +625,8 @@ template <int dim, int spacedim>
 void DistributedLagrangeProblem<dim, spacedim>::setup_coupling() {
   TimerOutput::Scope timer_section(monitor, "Setup coupling");
 
-  const QGauss<dim> quad(parameters.coupling_quadrature_order);
+  const Quadrature<dim> quad = make_quadrature<dim>(
+      parameters.embedded_mesh_type, parameters.coupling_quadrature_order);
 
   DynamicSparsityPattern dsp(space_dh->n_dofs(), embedded_dh->n_dofs());
 
@@ -453,38 +643,42 @@ void DistributedLagrangeProblem<dim, spacedim>::assemble_system() {
   {
     TimerOutput::Scope timer_section(monitor, "Assemble system");
 
+    const Quadrature<spacedim> bg_quad = make_quadrature<spacedim>(
+        parameters.background_mesh_type, 2 * space_fe->degree + 1);
+    const Quadrature<dim> emb_lap_quad = make_quadrature<dim>(
+        parameters.embedded_mesh_type, 2 * space_fe->degree + 1);
+    const Quadrature<dim> emb_mass_quad = make_quadrature<dim>(
+        parameters.embedded_mesh_type, 2 * embedded_fe->degree + 1);
+
     MatrixTools::create_laplace_matrix(
-        *space_dh, QGauss<spacedim>(2 * space_fe->degree + 1), stiffness_matrix,
+        *space_mapping, *space_dh, bg_quad, stiffness_matrix,
         embedding_rhs_function, embedding_rhs,
         static_cast<const Function<spacedim> *>(nullptr), constraints);
 
     // stiffness_matrix_copy.copy_from(stiffness_matrix);
 
     MatrixTools::create_mass_matrix(
-        *space_dh, QGauss<spacedim>(2 * space_fe->degree + 1), Mass_matrix,
+        *space_mapping, *space_dh, bg_quad, Mass_matrix,
         static_cast<const Function<spacedim> *>(nullptr), constraints);
 
     MatrixTools::create_laplace_matrix(*embedded_mapping, *embedded_dh,
-                                       QGauss<dim>(2 * space_fe->degree + 1),
-                                       embedded_stiffness_matrix);
+                                       emb_lap_quad, embedded_stiffness_matrix);
 
     MatrixTools::create_mass_matrix(*embedded_mapping, *embedded_dh,
-                                    QGauss<dim>(2 * embedded_fe->degree + 1),
-                                    mass_matrix);
+                                    emb_mass_quad, mass_matrix);
 
     MatrixTools::create_mass_matrix(*embedded_mapping, *embedded_dh,
-                                    QGauss<dim>(2 * embedded_fe->degree + 1),
-                                    mass_matrix_immersed_dg);
+                                    emb_mass_quad, mass_matrix_immersed_dg);
 
-    VectorTools::create_right_hand_side(
-        *embedded_mapping, *embedded_dh,
-        QGauss<dim>(2 * embedded_fe->degree + 1), embedded_value_function,
-        embedded_rhs);
+    VectorTools::create_right_hand_side(*embedded_mapping, *embedded_dh,
+                                        emb_mass_quad, embedded_value_function,
+                                        embedded_rhs);
   }
   {
     TimerOutput::Scope timer_section(monitor, "Assemble coupling system");
 
-    const QGauss<dim> quad(parameters.coupling_quadrature_order);
+    const Quadrature<dim> quad = make_quadrature<dim>(
+        parameters.embedded_mesh_type, parameters.coupling_quadrature_order);
     NonMatching::create_coupling_mass_matrix(
         *space_grid_tools_cache, *space_dh, *embedded_dh, quad, coupling_matrix,
         AffineConstraints<double>(), ComponentMask(), ComponentMask(),
@@ -515,7 +709,7 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     auto K_inv = linear_operator(K, K_inv_umfpack);
 
     auto S = C * K_inv * Ct;
-    SolverCG<Vector<double>> solver_cg(schur_solver_control);
+    SolverCG<Vector<double>> solver_cg(outer_solver_control);
     auto S_inv = inverse_operator(S, solver_cg, PreconditionIdentity());
 
     lambda = S_inv * (C * K_inv * embedding_rhs - embedded_rhs);
@@ -575,7 +769,7 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     data.force_re_orthogonalization = true;
     data.right_preconditioning = true;
 
-    SolverGMRES<BlockVector<double>> solver_gmres(schur_solver_control, data);
+    SolverGMRES<BlockVector<double>> solver_gmres(outer_solver_control, data);
 
     solver_gmres.solve(AA, solution_block, system_rhs_block, prec_elman);
 
@@ -625,8 +819,8 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     RationalPreconditioner rational_prec{K_inv, &embedded_stiffness_matrix,
                                          &mass_matrix, rho_bound};
 
-    // SolverGMRES<BlockVector<double>> solver_min_res(schur_solver_control);
-    SolverMinRes<BlockVector<double>> solver_min_res(schur_solver_control);
+    // SolverGMRES<BlockVector<double>> solver_min_res(outer_solver_control);
+    SolverMinRes<BlockVector<double>> solver_min_res(outer_solver_control);
 
     solver_min_res.solve(AA, solution_block, system_rhs_block, rational_prec);
 
@@ -644,7 +838,7 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     SparseDirectUMFPACK M_inv_umfpack;
     M_inv_umfpack.initialize(mass_matrix);
 
-    double gamma = 10;
+    double gamma = parameters.augmentation_constant;
     TrilinosWrappers::PreconditionAMG amg_prec;
     auto prec_for_cg = null_operator(K);
 
@@ -656,53 +850,203 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
           GridTools::maximal_cell_diameter(*embedded_grid, *embedded_mapping);
       gamma *= 1. / h_immersed;
 
+      // ----------------------------------------------------------------
+      // Matrix export (triplet format) BEFORE the AL augmentation, so
+      // that K is the bare bulk stiffness with Dirichlet BCs but without
+      // the gamma * (C^T M^{-1} C) contribution. K_aug, C, M and the value
+      // of h used to bake gamma are written immediately after the
+      // augmentation loop below.
+      // ----------------------------------------------------------------
+      static unsigned int matrix_export_cycle = 0;
+      const bool do_export = parameters.export_matrices_for_matlab;
+      const unsigned int export_cycle_idx =
+          do_export ? matrix_export_cycle++ : 0u;
+      auto write_triplets = [&, export_cycle_idx](const SparseMatrix<double> &A,
+                                                  const std::string &name,
+                                                  const unsigned int n_rows,
+                                                  const unsigned int n_cols) {
+        const std::string fname =
+            parameters.matrix_export_directory + "/" + name + "_cycle" +
+            Utilities::int_to_string(export_cycle_idx, 2) + ".txt";
+        std::ofstream out(fname);
+        out.precision(16);
+        out << std::scientific;
+        for (auto it = A.begin(); it != A.end(); ++it)
+          out << (it->row() + 1) << ' ' << (it->column() + 1) << ' '
+              << it->value() << '\n';
+        out << n_rows << ' ' << n_cols << " 0\n";
+        deallog << "Wrote " << fname << " (" << n_rows << " x " << n_cols << ")"
+                << std::endl;
+      };
+      if (do_export) {
+        AssertThrow(embedded_dh->n_dofs() <= parameters.matrix_export_max_dofs,
+                    ExcMessage("Embedded DoFs exceed 'Matrix export max "
+                               "DoFs'; lower the refinement / cycle count, "
+                               "or raise the cap in the parameter file."));
+        AssertThrow(parameters.use_operator_form,
+                    ExcMessage("Matrix export in immersed_laplace requires "
+                               "'Use operator version' = true so that K_aug "
+                               "is assembled directly."));
+        std::filesystem::create_directories(parameters.matrix_export_directory);
+        write_triplets(stiffness_matrix, "K", space_dh->n_dofs(),
+                       space_dh->n_dofs());
+      }
+
+      // Snapshot the original bulk stiffness K (with Dirichlet BCs but without
+      // the AL augmentation) so that the optional algebraic comparison below
+      // can build K + gamma * C M^{-1} C^T without re-assembling K inside its
+      // timer.
+      SparseMatrix<double> K_bare;
+      if (parameters.compare_algebraic_augmentation) {
+        K_bare.reinit(stiffness_sparsity);
+        K_bare.copy_from(stiffness_matrix);
+      }
+
+      // Variational (particle-based) augmentation of the (1,1) block. Timed so
+      // that its cost can be compared against the algebraic triple product.
+
       Particles::ParticleHandler<spacedim> immersed_particle_handler;
-      QGauss<dim> immersed_quadrature(2 * space_fe->degree + 1);
+      const Quadrature<dim> immersed_quadrature = make_quadrature<dim>(
+          parameters.embedded_mesh_type, 2 * space_fe->degree + 1);
       ALUtils::initialize_particles<spacedim, dim, spacedim>(
-          immersed_particle_handler, *space_dh, *embedded_dh,
-          StaticMappingQ1<spacedim>::mapping, *embedded_mapping,
-          immersed_quadrature);
+          immersed_particle_handler, *space_dh, *embedded_dh, *space_mapping,
+          *embedded_mapping, immersed_quadrature);
 
       // and then we loop over the particles to build the AL term
-      std::vector<types::global_dof_index> background_dof_indices(
-          space_fe->n_dofs_per_cell());
+      {
+        TimerOutput::Scope t_var(
+            monitor, "Variational (1,1) block augmentation (particles)");
+        std::vector<types::global_dof_index> background_dof_indices(
+            space_fe->n_dofs_per_cell());
 
-      FullMatrix<double> local_matrix(space_fe->n_dofs_per_cell(),
-                                      space_fe->n_dofs_per_cell());
+        FullMatrix<double> local_matrix(space_fe->n_dofs_per_cell(),
+                                        space_fe->n_dofs_per_cell());
 
-      auto particle = immersed_particle_handler.begin();
-      while (particle != immersed_particle_handler.end()) {
-        local_matrix = 0;
-        const auto &cell = particle->get_surrounding_cell();
-        const auto &dh_cell =
-            typename DoFHandler<spacedim>::cell_iterator(*cell, space_dh.get());
-        dh_cell->get_dof_indices(background_dof_indices); // background dofs
+        auto particle = immersed_particle_handler.begin();
+        while (particle != immersed_particle_handler.end()) {
+          local_matrix = 0;
+          const auto &cell = particle->get_surrounding_cell();
+          const auto &dh_cell = typename DoFHandler<spacedim>::cell_iterator(
+              *cell, space_dh.get());
+          dh_cell->get_dof_indices(background_dof_indices); // background dofs
 
-        const auto pic = immersed_particle_handler.particles_in_cell(cell);
-        Assert(pic.begin() == particle, ExcInternalError());
-        for (const auto &p : pic) {
-          const Point<spacedim> ref_q = p.get_reference_location();
-          const double JxW = p.get_properties()[0];
+          const auto pic = immersed_particle_handler.particles_in_cell(cell);
+          Assert(pic.begin() == particle, ExcInternalError());
+          for (const auto &p : pic) {
+            const Point<spacedim> ref_q = p.get_reference_location();
+            const double JxW = p.get_properties()[0];
 
-          for (unsigned int i = 0; i < space_fe->n_dofs_per_cell(); ++i) {
-            for (unsigned int j = 0; j < space_fe->n_dofs_per_cell(); ++j) {
-              local_matrix(i, j) +=
-                  gamma *                           // gamma * h^{-1}
-                  space_fe->shape_value(i, ref_q) * // phi_i(q)
-                  space_fe->shape_value(j, ref_q)   // phi_j(q)
-                  * JxW;
+            for (unsigned int i = 0; i < space_fe->n_dofs_per_cell(); ++i) {
+              for (unsigned int j = 0; j < space_fe->n_dofs_per_cell(); ++j) {
+                local_matrix(i, j) +=
+                    gamma *                           // gamma * h^{-1}
+                    space_fe->shape_value(i, ref_q) * // phi_i(q)
+                    space_fe->shape_value(j, ref_q)   // phi_j(q)
+                    * JxW;
+              }
             }
           }
+
+          constraints.distribute_local_to_global(
+              local_matrix, background_dof_indices, stiffness_matrix);
+
+          particle = pic.end();
         }
+        std::cout << "Variational augmentation completed." << std::endl;
+      } // end variational (1,1) block augmentation timer scope
 
-        constraints.distribute_local_to_global(
-            local_matrix, background_dof_indices, stiffness_matrix);
-
-        particle = pic.end();
+      // ----------------------------------------------------------------
+      // Post-augmentation matrix export: K_aug (= K + gamma * AL term,
+      // with gamma = c / h_immersed baked in via 'Augmentation constant'),
+      // C, M, and the immersed cell diameter h used to bake gamma.
+      // ----------------------------------------------------------------
+      if (do_export) {
+        write_triplets(stiffness_matrix, "K_aug", space_dh->n_dofs(),
+                       space_dh->n_dofs());
+        write_triplets(coupling_matrix, "C", space_dh->n_dofs(),
+                       embedded_dh->n_dofs());
+        write_triplets(mass_matrix, "M", embedded_dh->n_dofs(),
+                       embedded_dh->n_dofs());
+        const std::string h_fname =
+            parameters.matrix_export_directory + "/h_cycle" +
+            Utilities::int_to_string(export_cycle_idx, 2) + ".txt";
+        std::ofstream h_out(h_fname);
+        h_out.precision(16);
+        h_out << std::scientific << h_immersed << '\n';
+        deallog << "Wrote " << h_fname << " (h_immersed = " << h_immersed
+                << ", c_baked = " << parameters.augmentation_constant
+                << ", gamma_baked = c/h = " << gamma << ")" << std::endl;
       }
 
       amg_prec.initialize(stiffness_matrix);
       prec_for_cg = linear_operator(stiffness_matrix, amg_prec);
+
+      // ----------------------------------------------------------------
+      // Optional timing comparison: also build the (1,1)-block augmentation
+      // ALGEBRAICALLY as the triple product  K + gamma * C * M^{-1} * C^T,
+      // purely to measure how long the algebraic assembly takes compared to
+      // the variational (particle) augmentation above. The result is
+      // discarded; only the wall time (see the timer summary) matters. Note
+      // the two operators are NOT identical (the variational form is the
+      // exact immersed L2 product; the algebraic one is its mass-lumped
+      // triple-product approximation), so no value comparison is made.
+      // In practice, even a mass-lumped approximation is slower than the
+      // variational augmentation.
+
+      if (parameters.compare_algebraic_augmentation) {
+        TimerOutput::Scope t_alg(
+            monitor, "Algebraic (1,1) block augmentation (triple product)");
+
+        // 1. Transpose the coupling matrix C (n_bg x n_lambda) -> C^T.
+        DynamicSparsityPattern dsp_ct(coupling_sparsity.n_cols(),
+                                      coupling_sparsity.n_rows());
+        for (unsigned int row = 0; row < coupling_sparsity.n_rows(); ++row)
+          for (auto it = coupling_sparsity.begin(row);
+               it != coupling_sparsity.end(row); ++it)
+            dsp_ct.add(it->column(), row);
+        SparsityPattern sp_ct;
+        sp_ct.copy_from(dsp_ct);
+        SparseMatrix<double> coupling_t(sp_ct);
+        for (unsigned int row = 0; row < coupling_matrix.m(); ++row)
+          for (auto it = coupling_matrix.begin(row);
+               it != coupling_matrix.end(row); ++it)
+            coupling_t.set(it->column(), row, it->value());
+
+        // 2. Triple product  C * diag(M^{-1}) * C^T  (n_bg x n_bg), using the
+        //    diagonal of the immersed mass matrix as W.
+        Vector<double> inv_diag(mass_matrix_immersed_dg.m());
+        for (types::global_dof_index i = 0; i < mass_matrix_immersed_dg.m();
+             ++i)
+          inv_diag(i) = 1. / mass_matrix_immersed_dg.diag_element(i);
+
+        DynamicSparsityPattern dsp_aug(space_dh->n_dofs(), space_dh->n_dofs());
+        dsp_aug.compute_mmult_pattern(coupling_sparsity, sp_ct);
+        // Union with K's stencil so that the bare stiffness can be added.
+        for (unsigned int row = 0; row < space_dh->n_dofs(); ++row)
+          for (auto it = stiffness_sparsity.begin(row);
+               it != stiffness_sparsity.end(row); ++it)
+            dsp_aug.add(row, it->column());
+        SparsityPattern sp_aug;
+        sp_aug.copy_from(dsp_aug);
+
+        SparseMatrix<double> triple_product(sp_aug);
+        SparseMatrix<double> coupling_copy(coupling_sparsity);
+        coupling_copy.copy_from(coupling_matrix);
+        coupling_copy.mmult(triple_product, coupling_t, inv_diag, false);
+
+        // 3. Assemble the whole augmented block  K_alg = K + gamma * triple,
+        //    reusing the bare K snapshot (no re-assembly inside the timer).
+        SparseMatrix<double> K_alg(sp_aug);
+        for (unsigned int row = 0; row < K_bare.m(); ++row)
+          for (auto it = K_bare.begin(row); it != K_bare.end(row); ++it)
+            K_alg.add(row, it->column(), it->value());
+        K_alg.add(gamma, triple_product);
+
+        deallog << "Algebraic (1,1) block: assembled K + gamma * C M^{-1} C^T ("
+                << K_alg.n_nonzero_elements()
+                << " nonzeros) for timing comparison (result discarded)."
+                << std::endl;
+      }
 
     } else {
 
@@ -822,7 +1166,9 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
 
       stiffness_matrix_copy.reinit(sp_aux);
       MatrixTools::create_laplace_matrix(
-          *space_dh, QGauss<spacedim>(2 * space_fe->degree + 1),
+          *space_mapping, *space_dh,
+          make_quadrature<spacedim>(parameters.background_mesh_type,
+                                    2 * space_fe->degree + 1),
           stiffness_matrix_copy, embedding_rhs_function, embedding_rhs_copy,
           static_cast<const Function<spacedim> *>(nullptr), constraints);
 
@@ -850,19 +1196,28 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     // auto invW = invW1 * invW1;
     auto invW = null_operator(M);
     auto invM = null_operator(M);
+
+    // Inner iterative solver for the (SPD) mass matrix: CG preconditioned
+    // with SSOR. This is a classical, well-established choice for SPD
+    // matrices and produces a symmetric application of M^{-1}.
+    static SolverControl mass_inner_control(
+        std::max<unsigned int>(1000, mass_matrix.m()), 1e-9, false, false);
+    static SolverCG<Vector<double>> mass_inner_cg(mass_inner_control);
+    static PreconditionSSOR<SparseMatrix<double>> mass_ssor;
+    mass_ssor.initialize(
+        mass_matrix,
+        PreconditionSSOR<SparseMatrix<double>>::AdditionalData(1.2));
+
+    auto invM_iter = inverse_operator(M, mass_inner_cg, mass_ssor);
+
+    DiagonalMatrix<Vector<double>> diag_matrix;
     Vector<double> inv_diagonal(mass_matrix.m());
-    DiagonalMatrix<Vector<double>> diag_matrix(inv_diagonal);
+
     if (parameters.use_operator_form) {
-
-      if (parameters.use_diagonal_inverse) {
-        for (unsigned int i = 0; i < mass_matrix.m(); ++i)
-          inv_diagonal[i] = 1. / (mass_matrix.diag_element(i));
-
-        diag_matrix.reinit(inv_diagonal);
-        invW = linear_operator(diag_matrix);
-      } else {
+      if (parameters.use_diagonal_inverse)
+        invW = invM_iter;
+      else
         invW = linear_operator(mass_matrix, M_inv_umfpack);
-      }
     } else {
       // no operator form, we use M^2
       if (parameters.use_diagonal_inverse) {
@@ -883,7 +1238,7 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     else
       Aug = K + gamma * Ct * invW * C;
 
-    deallog << "gamma: " << gamma << std::endl;
+    deallog << "gamma/h: " << gamma << std::endl;
 
     BlockVector<double> solution_block;
     BlockVector<double> system_rhs_block;
@@ -907,14 +1262,33 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     SolverControl control_lagrangian(100, 1e-2, false, true);
     SolverCG<Vector<double>> solver_lagrangian(control_lagrangian);
 
+    // Count total inner CG iterations across all applications of Aug_inv
+    // performed during the outer FGMRES solve. The slot is invoked on every
+    // CG check() (including the initial residual check), so the sum is a
+    // faithful upper bound on the cumulative inner work. Only connected
+    // when the CG path is actually used.
+    unsigned int total_inner_iters = 0;
+    auto inner_signal_conn = solver_lagrangian.connect(
+        [&total_inner_iters](
+            const unsigned int /*step*/, const double /*res*/,
+            const Vector<double> & /*current*/) -> SolverControl::State {
+          ++total_inner_iters;
+          return SolverControl::success;
+        });
+
+    LinearOperator<Vector<double>, Vector<double>> Aug_inv;
 #ifdef DEAL_II_WITH_TRILINOS
-    auto Aug_inv =
+    Aug_inv =
         inverse_operator(Aug, solver_lagrangian, prec_for_cg); //! augmented
+    std::cout << "Using AMG as inner solver " << std::endl;
 #else
-    auto Aug_inv = inverse_operator(Aug, solver_lagrangian,
-                                    PreconditionIdentity()); //! augmented
+    // This is NOT efficient... but if you don't have Trilinos, this is the
+    // fallback option.
+    Aug_inv = inverse_operator(Aug, solver_lagrangian,
+                               PreconditionIdentity()); //! augmented
 #endif
-    SolverFGMRES<BlockVector<double>> solver_fgmres(schur_solver_control);
+
+    SolverFGMRES<BlockVector<double>> solver_fgmres(outer_solver_control);
 
     BlockPreconditionerAugmentedLagrangian augmented_lagrangian_preconditioner{
         Aug_inv, C, Ct, invW, gamma};
@@ -943,6 +1317,9 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
     solver_fgmres.solve(AA, solution_block, system_rhs_block,
                         augmented_lagrangian_preconditioner);
 
+    inner_signal_conn.disconnect();
+    last_inner_iters_total = total_inner_iters;
+
     solution = solution_block.block(0);
 
     constraints.distribute(solution);
@@ -953,7 +1330,21 @@ void DistributedLagrangeProblem<dim, spacedim>::solve() {
   // Store iteration counts and DoF
   results_data.dofs_background = space_dh->n_dofs();
   results_data.dofs_immersed = embedded_dh->n_dofs();
-  results_data.outer_iterations = schur_solver_control.last_step();
+  results_data.outer_iterations = outer_solver_control.last_step();
+
+  // Append a row to the iteration-counts table for this refinement cycle.
+  const unsigned int outer_its = outer_solver_control.last_step();
+  const double inner_per_outer =
+      (outer_its == 0) ? double(last_inner_iters_total)
+                       : double(last_inner_iters_total) / double(outer_its);
+  convergence_table.add_value("cells_bg", space_grid->n_active_cells());
+  convergence_table.add_value("cells_emb", embedded_grid->n_active_cells());
+  convergence_table.add_value("dofs_u", space_dh->n_dofs());
+  convergence_table.add_value("dofs_lambda", embedded_dh->n_dofs());
+  convergence_table.add_value("outer_its", outer_its);
+  convergence_table.add_value("inner_cg_total", last_inner_iters_total);
+  convergence_table.add_value("inner_cg/outer", inner_per_outer);
+  convergence_table.set_precision("inner_cg/outer", 1);
 }
 
 template <int dim, int spacedim>
@@ -966,13 +1357,14 @@ void DistributedLagrangeProblem<dim, spacedim>::output_results() {
 
   embedding_out.attach_dof_handler(*space_dh);
   embedding_out.add_data_vector(solution, "solution");
-  embedding_out.build_patches(parameters.embedding_space_finite_element_degree);
+  embedding_out.build_patches(*space_mapping,
+                              parameters.embedding_space_finite_element_degree);
   embedding_out.write_vtu(embedding_out_file);
 
   DataOut<dim, spacedim> embedded_out;
 
-  // std::ofstream embedded_out_file("embedded.vtu");
-  std::ofstream embedded_out_file("grid-int.gnuplot");
+  std::ofstream embedded_out_file("embedded.vtu");
+  // std::ofstream embedded_out_file("grid-int.gnuplot");
 
   embedded_out.attach_dof_handler(*embedded_dh);
   const auto dg_or_not = parameters.embedded_space_finite_element_degree == 0
@@ -981,8 +1373,8 @@ void DistributedLagrangeProblem<dim, spacedim>::output_results() {
   embedded_out.add_data_vector(lambda, "lambda", dg_or_not);
   embedded_out.add_data_vector(embedded_value, "g", dg_or_not);
   embedded_out.build_patches(*embedded_mapping, 1.);
-  // embedded_out.write_vtu(embedded_out_file);
-  embedded_out.write_gnuplot(embedded_out_file);
+  embedded_out.write_vtu(embedded_out_file);
+  // embedded_out.write_gnuplot(embedded_out_file);
 
   // Estimate condition number
   std::cout << "- - - - - - - - - - - - - - - - - - - - - - - -" << std::endl;
@@ -1034,12 +1426,21 @@ void DistributedLagrangeProblem<dim, spacedim>::run() {
   AssertThrow(parameters.initialized, ExcNotInitialized());
   deallog.depth_console(parameters.verbosity_level);
 
-  setup_grids_and_dofs();
-  setup_coupling();
-  assemble_system();
-  solve();
+  for (unsigned int cycle = 0; cycle < parameters.n_refinement_cycles;
+       ++cycle) {
+    deallog << "==== Refinement cycle " << cycle << " ====" << std::endl;
+    setup_grids_and_dofs();
+    setup_coupling();
+    assemble_system();
+    solve();
+    export_results_to_csv_file();
+
+    std::cout << "\nRefinement study summary:\n";
+    convergence_table.write_text(std::cout,
+                                 TableHandler::TextOutputFormat::org_mode_table);
+    std::cout << std::flush;
+  }
   output_results();
-  export_results_to_csv_file();
 }
 } // namespace ImmersedLaplaceSolver
 
@@ -1049,20 +1450,56 @@ int main(int argc, char **argv) {
     using namespace dealii;
     using namespace ImmersedLaplaceSolver;
 
-    const unsigned int dim = 1, spacedim = 2;
-
-    DistributedLagrangeProblem<dim, spacedim>::Parameters parameters;
-    DistributedLagrangeProblem<dim, spacedim> problem(parameters);
-
     std::string parameter_file;
     if (argc > 1)
       parameter_file = argv[1];
     else
       parameter_file = "parameters.prm";
 
-    ParameterAcceptor::initialize(parameter_file, "used_parameters.prm");
-    problem.set_filename(parameter_file);
-    problem.run();
+    // Detect the (dim, spacedim) pair from the parameter file by scanning
+    // for the "Distributed Lagrange<dim,spacedim>" subsection header. Two
+    // configurations are supported: <1,2> and <2,3>.
+    auto scan_prm_for_dims =
+        [](const std::string &fname) -> std::pair<int, int> {
+      std::ifstream in(fname);
+      AssertThrow(in, ExcMessage("Could not open parameter file: " + fname));
+      std::string content((std::istreambuf_iterator<char>(in)),
+                          std::istreambuf_iterator<char>());
+      auto strip = [](std::string s) {
+        s.erase(std::remove_if(s.begin(), s.end(),
+                               [](unsigned char c) { return std::isspace(c); }),
+                s.end());
+        return s;
+      };
+      const std::string c = strip(content);
+      const bool has_12 =
+          c.find("DistributedLagrange<1,2>") != std::string::npos;
+      const bool has_23 =
+          c.find("DistributedLagrange<2,3>") != std::string::npos;
+      AssertThrow(has_12 ^ has_23,
+                  ExcMessage("The parameter file must contain exactly one of "
+                             "'subsection Distributed Lagrange<1,2>' or "
+                             "'subsection Distributed Lagrange<2,3>'."));
+      if (has_12)
+        return {1, 2};
+      return {2, 3};
+    };
+
+    auto run = [&](auto dim_const, auto spacedim_const) {
+      constexpr int dim = decltype(dim_const)::value;
+      constexpr int spacedim = decltype(spacedim_const)::value;
+      typename DistributedLagrangeProblem<dim, spacedim>::Parameters parameters;
+      DistributedLagrangeProblem<dim, spacedim> problem(parameters);
+      ParameterAcceptor::initialize(parameter_file, "used_parameters.prm");
+      problem.set_filename(parameter_file);
+      problem.run();
+    };
+
+    const auto dims = scan_prm_for_dims(parameter_file);
+    if (dims.first == 1 && dims.second == 2)
+      run(std::integral_constant<int, 1>{}, std::integral_constant<int, 2>{});
+    else
+      run(std::integral_constant<int, 2>{}, std::integral_constant<int, 3>{});
   } catch (std::exception &exc) {
     std::cerr << std::endl
               << std::endl

@@ -1,17 +1,25 @@
 # Listing of Parameters
 # ---------------------
-subsection Nitsche Lagrange<1,2>
-  set Coupling quadrature order             = 3
-  set Initial space refinement              = 3
+subsection NitscheLagrange<2,3>
+  set Coupling quadrature order             = 5
+  set Initial space refinement              = 0
+  set Boundary coarsening level             = 0
   set Bulk space finite element degree      = 1
-  set Use discontinuous multiplier space    = true
-  set Multiplier finite element degree      = 0 #0
-  set Name of the grid                      = hyper_cube #hyper_ball
-  set Arguments for the grid                = 0 : 1.: false #0.0, 0.0 : 1.0 : true
-  set Number of refinement cycles           = 5
+  set Use discontinuous multiplier space    = false
+  set Multiplier finite element degree      = 1
+  set Name of the grid                      = from_file#hyper_cube #hyper_ball
+  set Arguments for the grid                = null#0 : 1.: false #0.0, 0.0 : 1.0 : true
+  set Name of the external grid file        = homer.msh #horse.msh #lion.msh #lucy.msh # #happy_buddha.msh #stanford-bunny.msh #nefertiti.msh #cow.msh #beetle.msh
+  set Scale factor for the external grid    = 1. #1e-3 #1e-2 #1e-3
+  set Number of refinement cycles           = 4
   set Verbosity level                       = 4
+  set Mesh type                             = simplex # external grids above are all tetrahedral grids
   set Use manufactured solution             = false
-
+  set Iterative inversion mass matrix       = false
+  set Augmentation gamma assembly           = 10.0
+  set Augmentation gamma preconditioner     = 10.0
+  set Export matrices for matlab            = false
+  set Matrix export max DoFs                = 16642
 
   subsection Dirichlet boundary data
     # Symbolic constants for the function expression, in the form
@@ -22,7 +30,7 @@ subsection Nitsche Lagrange<1,2>
     # Semicolon-separated formulas for the function components. Supports
     # standard operations, functions `sin`, `cos`, etc., and conditionals
     # `if(x>0, 1, -1)`.
-    set Function expression = x^2+y^2 #if(x>0.5, -1, 1) #sin(x)+y #0.
+    set Function expression = x+y #10*(x + y) #x+y
 
     # Names of the independent variables, separated by commas.
     set Variable names      = x,y,t
@@ -42,8 +50,8 @@ subsection Nitsche Lagrange<1,2>
     set Log history   = true
     set Log result    = true
     set Max steps     = 1000 
-    set Reduction     = 1.e-9 # default: 1.e-2
-    set Tolerance     = 1.e-12 # default: 1.e-10
+    set Reduction     = 1.e-9
+    set Tolerance     = 1.e-12
   end
 
   subsection Right hand side
