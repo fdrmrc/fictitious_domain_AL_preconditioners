@@ -59,6 +59,15 @@ Copy the appropriate parameter file and pass the copy to the executable. Most of
 
 Applications write the resolved parameters to `used_parameters.prm` in the working directory, overwriting it on subsequent runs.
 
+## Tutorial
+
+The screencast below walks through the whole workflow: cloning the repository, configuring it with CMake, building the executables, and running one of the examples with its parameter file.
+
+https://github.com/user-attachments/assets/e9dd8654-6cb4-44f0-8546-bda1b7c772b2
+
+> [!NOTE]
+> GitHub renders the link above as an inline video player. If you are reading this file outside GitHub, open the link in a browser instead.
+
 ## Citations
 
 If you use one of the codes above in your research, please cite the relevant paper among the following ones:
