@@ -27,24 +27,25 @@ With deal.II installed and configured as above:
 git clone https://github.com/fdrmrc/fictitious_domain_AL_preconditioners.git
 cd fictitious_domain_AL_preconditioners
 mkdir build
-cmake -DDEAL_II_DIR=/path/to/deal.II 
+cd build
+cmake -DDEAL_II_DIR=/path/to/deal.II ..
 make -j <N>
 ```
 
 Replace `/path/to/deal.II` with your installation path and adjust `N` to the
-desired number of build jobs. The executables are generated in the `build/` directory. 
+desired number of build jobs. The executables are generated in the `build/` directory. The sources of the examples are in [examples/](examples/), and the shared headers in [include/](include/).
 
 The following table provides a list of target executables. The *Paper* column links lead to the full references and BibTeX entries below. 
 
 | Executable | Problem | Parameter files | Paper |
 | --- | --- | --- | --- |
 | `immersed_laplace` | Laplace equation with an internal constraint on a codimension-one immersed domain | [parameters/](parameters_immersed_laplace/) | [1 - CMAME](#paper-scalable) |
-| `stokes_immersed_boundary` | Stokes problem with a codimension-one constraints | [parameters_stokes.prm](parameters_stokes.prm), [parameters_stokes_3d.prm](parameters_stokes_3d.prm) | [1 - CMAME](#paper-scalable) |
+| `stokes_immersed_boundary` | Stokes problem with a codimension-one constraints | [parameters_stokes.prm](parameters_stokes/parameters_stokes.prm), [parameters_stokes_3d.prm](parameters_stokes/parameters_stokes_3d.prm) | [1 - CMAME](#paper-scalable) |
 | `elliptic_interface` | Scalar elliptic interface problem with a jump in coefficients | [parameters_elliptic_interface/](parameters_elliptic_interface/) | [2 - CAMWA](#paper-elliptic_interface) |
 | `elliptic_interface_elasticity` | Immersed elasticity interface problem with different material properties on subdomains | [parameters_elasticity.prm](parameters_elasticity/parameters_elasticity.prm) | [2 - CAMWA](#paper-elliptic_interface) |
 | `babuska_problem` | Boundary constraints imposed using Lagrange multipliers a' la Babuska | [parameters_babuska_2D.prm](/parameters_babuska/parameters_babuska_2D.prm), [parameters_babuska_3D.prm](/parameters_babuska/parameters_babuska_3D.prm) | [3 - arXiV](#paper-unified) |
 | `variational_elliptic_interface` | Scalar elliptic interface problem with a jump in coefficients (with variational augmentation) | [parameters_elliptic_interface_variational.prm](/parameters_elliptic_interface/variational/parameters_elliptic_interface_variational.prm) | [3 - arXiV](#paper-unified) |
-| `variational_elasticity` | Immersed elasticity interface problem with different material properties on subdomains (with variational augmentation) | [parameters_elasticity_variational.prm](/parameters_elasticity/parameters_elasticity_variational.prm) | [3 - arXiV](#paper-unified) |
+| `variational_immersed_elasticity` | Immersed elasticity interface problem with different material properties on subdomains (with variational augmentation) | [parameters_elasticity_variational.prm](/parameters_elasticity/parameters_elasticity_variational.prm) | [3 - arXiV](#paper-unified) |
 
 
 Copy the appropriate parameter file and pass the copy to the executable. Most of the examples include the following sections:
@@ -67,6 +68,16 @@ https://github.com/user-attachments/assets/e9dd8654-6cb4-44f0-8546-bda1b7c772b2
 
 > [!NOTE]
 > GitHub renders the link above as an inline video player. If you are reading this file outside GitHub, open the link in a browser instead.
+
+## Testing
+
+A small regression suite checks that the preconditioned outer solver of some of the examples converges within a prescribed range of iterations at every refinement cycle. After building the examples, run it from the `build/` directory:
+
+```bash
+ctest --output-on-failure
+```
+
+The tests, their parameter files, and the allowed iteration ranges are in [tests/](tests/).
 
 ## Citations
 

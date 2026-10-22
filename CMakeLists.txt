@@ -1,6 +1,4 @@
-# Set the name of the project
 cmake_minimum_required(VERSION 3.13.4)
-project(AL_preconditioning_fictitious_domain)
 
 # Find deal.II library
 find_package(deal.II 9.8.0
@@ -32,31 +30,42 @@ This conflicts with the requirements."
   )
 endif()
 
+# Picks up the compiler and flags deal.II was built with (e.g. the MPI
+# compiler wrapper), so it must precede project().
 deal_ii_initialize_cached_variables()
 
-# Define multiple executables
-add_executable(immersed_laplace immersed_laplace.cc)
-add_executable(stokes_immersed_boundary stokes_immersed_boundary.cc)
-add_executable(elliptic_interface elliptic_interface.cc)
-add_executable(elliptic_interface_elasticity elliptic_interface_elasticity.cc)
-add_executable(babuska_problem babuska_problem.cc)
-add_executable(variational_elliptic_interface variational_elliptic_interface.cc)
-add_executable(variational_immersed_elasticity variational_immersed_elasticity.cc)
+# Set the name of the project
+project(AL_preconditioning_fictitious_domain)
 
-# Link each executable with deal.II
-deal_ii_setup_target(immersed_laplace)
-deal_ii_setup_target(stokes_immersed_boundary)
-deal_ii_setup_target(elliptic_interface)
-deal_ii_setup_target(elliptic_interface_elasticity)
-deal_ii_setup_target(babuska_problem)
-deal_ii_setup_target(variational_elliptic_interface)
-deal_ii_setup_target(variational_immersed_elasticity)
+# Example programs: one executable per source file in examples/. The
+# executables are placed at the top of the build directory.
+set(AL_EXAMPLES
+  babuska_problem
+  elliptic_interface
+  elliptic_interface_elasticity
+  immersed_laplace
+  stokes_immersed_boundary
+  variational_elliptic_interface
+  variational_immersed_elasticity
+)
+
+foreach(_example ${AL_EXAMPLES})
+  add_executable(${_example} examples/${_example}.cc)
+  target_include_directories(${_example} PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  # Link with deal.II
+  deal_ii_setup_target(${_example})
+endforeach()
 
 # Grids directory
 set(AL_GRIDS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/grids")
 foreach(_target immersed_laplace babuska_problem)
   target_compile_definitions(${_target} PRIVATE AL_GRIDS_DIR="${AL_GRIDS_DIR}")
 endforeach()
+
+# Regression tests, run with `ctest` from the build directory.
+enable_testing()
+add_subdirectory(tests)
 
 message(STATUS "
 ****************************************************************************************************

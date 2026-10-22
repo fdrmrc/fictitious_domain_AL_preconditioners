@@ -1,0 +1,125 @@
+# Test input: reduced copy of parameters_elliptic_interface/variational/parameters_elliptic_interface_variational.prm
+# (fewer refinement cycles and a local output directory, for a fast run).
+# Listing of Parameters (parallel operator-form AL)
+# -------------------------------------------------
+subsection Elliptic Interface Problem<2>
+  set Beta_1                             = 1
+  set Beta_2                             = 1e3
+  set Coupling quadrature order          = 5
+  set FE degree background               = 1
+  set FE degree immersed                 = 1
+  set Homogeneous Dirichlet boundary ids = 0,1,2,3
+  set Output directory                   = .
+  set Use fixed (inner) iterations       = false
+
+  subsection Right hand side f_1
+    set Function constants  =
+    set Function expression = 1.
+    set Variable names      = x,y,t
+  end
+
+  subsection Right hand side f_2 - f
+    set Function constants  =
+    set Function expression = 1. #0.
+    set Variable names      = x,y,t
+  end
+
+
+  subsection AL preconditioner
+    set Use modified AL preconditioner = true
+    set gamma fluid                    = 10
+    set gamma solid                    = 1e-2
+    set Verbosity level                = 4
+    set Compare algebraic augmentation = false
+  end
+
+#The manufactured solution below is from https://arxiv.org/pdf/2211.03443.
+# Omega   = (-1.4, 1.4)^2, Omega_2 = B_1(0,0)  (disk of radius 1 centered at origin)
+# Coefficients: beta_1 = 1, beta_2 = 10
+#
+# Exact (manufactured) solution:
+#   u_1(x,y) = (4 - x^2 - y^2) / 4       on Omega_1 (= background)
+#   u_2(x,y) = (31 - x^2 - y^2) / 40     on Omega_2
+#
+# Continuity at the interface |x|=1:
+#   u_1 = (4-1)/4   = 3/4
+#   u_2 = (31-1)/40 = 3/4
+# Flux continuity (beta * grad u \cdot n on |x|=1):
+#   beta_1 * d_r u_1 = 1  * (-r/2)  |_{r=1} = -1/2
+#   beta_2 * d_r u_2 = 10 * (-r/20) |_{r=1} = -1/2
+# Sources:
+#   -beta_1 Lap u_1 = 1   ->  f_1 = 1
+#   -beta_2 Lap u_2 = 1   ->  source on Omega_2 = 1
+#   f_2 - f         = 1 - 1 = 0
+#
+# Dirichlet data on the boundary of the square: inhomogeneous, equal to
+# the trace of u_1.
+
+  subsection Convergence test
+    # false: use homogeneous Dirichlet data and ignore both exact solutions.
+    # true: use the background exact solution as Dirichlet data and report errors.
+    set Do convergence test = false
+
+    subsection Exact solution
+      set Function constants  =
+      set Function expression = 0.#if(x*x + y*y > 1.0, (4 - x*x - y*y)/4, (31 - x*x - y*y)/40)
+      set Variable names      = x,y,t
+    end
+
+    subsection Exact solution immersed
+      set Function constants  =
+      set Function expression = (31 - x*x - y*y) / 40
+      set Variable names      = x,y,t
+    end
+  end
+
+  subsection Grid generation
+    set Background grid generator           = hyper_cube
+    set Background grid generator arguments = -1.: 1.: true
+    set Immersed grid generator             = hyper_ball#hyper_cube
+    set Immersed grid generator arguments   = 0.,0. : 0.3 : true#-0.14: 0.47: true
+    set Mesh type                           = hex  # "hex" or "simplex"
+    # FE triple selecting (bg, immersed primal, multiplier).
+    #  - "Q1-Q1-Q1"     (default): all three spaces are FE_Q(1); the
+    #    augmentation in A_bg is the particle-quadrature approximation of
+    #    (phi_i, phi_j)_{Omega_2}.
+    #  - "Q1-Bubble-Q0": bg = FE_Q(1), immersed space = FE_Q_Bubbles(1),
+    #    multiplier = FE_DGQ(0); the augmentation is assembled directly as
+    #    (P_h phi_i, phi_j)_{Omega_2}. Only the hex mesh path is supported.
+    set FE triple                           = Q1-Bubble-Q0 #Q1-Q1-Q1
+  end
+
+  subsection Inner solver control
+    set Log frequency = 1
+    set Log history   = false
+    set Log result    = true
+    set Max steps     = 100000
+    set Reduction     = 1.e-20
+    set Tolerance     = 1.e-2
+  end
+
+  subsection Iteration number control
+    set Log frequency = 1
+    set Log history   = false
+    set Log result    = true
+    set Max steps     = 30
+    set Tolerance     = 1.e-4
+  end
+
+  subsection Outer solver control
+    set Log frequency = 1
+    set Log history   = true
+    set Log result    = true
+    set Max steps     = 1000
+    set Reduction     = 1.e-9
+    set Tolerance     = 1.e-10
+  end
+
+  subsection Refinement and remeshing
+    set Initial background refinement = 5
+    set Initial immersed refinement   = 1
+    set Refinemented cycles           = 3
+    set Keep immersed grid fixed      = false
+  end
+
+end

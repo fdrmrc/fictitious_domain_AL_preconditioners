@@ -2383,11 +2383,12 @@ void EllipticInterfaceDLMParallel<dim>::output_results(
   {
     DataOut<dim> data_out;
     data_out.attach_dof_handler(dof_handler_bg);
-    data_out.add_data_vector(u_bg_ghosted, "u");
+    data_out.add_data_vector(u_bg_ghosted, "u", DataOut<dim>::type_dof_data);
     Vector<float> subdomain(tria_bg->n_active_cells());
     for (unsigned int i = 0; i < subdomain.size(); ++i)
       subdomain(i) = tria_bg->locally_owned_subdomain();
-    data_out.add_data_vector(subdomain, "subdomain");
+    data_out.add_data_vector(subdomain, "subdomain",
+                             DataOut<dim>::type_cell_data);
     data_out.build_patches(*mapping_ptr);
     data_out.write_vtu_with_pvtu_record(parameters.output_directory + "/",
                                         "solution-bg", cycle, mpi_communicator,
@@ -2396,7 +2397,7 @@ void EllipticInterfaceDLMParallel<dim>::output_results(
   {
     DataOut<dim> data_out;
     data_out.attach_dof_handler(dof_handler_fg);
-    data_out.add_data_vector(u_fg_ghosted, "u2");
+    data_out.add_data_vector(u_fg_ghosted, "u2", DataOut<dim>::type_dof_data);
     data_out.build_patches(*mapping_ptr);
     data_out.write_vtu_with_pvtu_record(parameters.output_directory + "/",
                                         "solution-imm", cycle, mpi_communicator,
@@ -2404,10 +2405,13 @@ void EllipticInterfaceDLMParallel<dim>::output_results(
   }
   {
     // The multiplier lives on `dof_handler_mult`, which may have a different
-    // FE (e.g. FE_DGQ(0)) than `dof_handler_fg`; output it separately.
+    // FE (e.g. FE_DGQ(0)) than `dof_handler_fg`; output it separately. The
+    // vector type must be explicit: with FE_DGQ(0) there is one DoF per cell,
+    // so DataOut cannot tell DoF data from cell data on its own.
     DataOut<dim> data_out;
     data_out.attach_dof_handler(dof_handler_mult);
-    data_out.add_data_vector(lam_ghosted, "lambda");
+    data_out.add_data_vector(lam_ghosted, "lambda",
+                             DataOut<dim>::type_dof_data);
     data_out.build_patches(*mapping_ptr);
     data_out.write_vtu_with_pvtu_record(parameters.output_directory + "/",
                                         "solution-lam", cycle, mpi_communicator,

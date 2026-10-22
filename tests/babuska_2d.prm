@@ -1,0 +1,74 @@
+# Test input: reduced copy of parameters_babuska/parameters_babuska_2D.prm
+# (fewer refinement cycles, for a fast run).
+# Listing of Parameters
+# ---------------------
+subsection NitscheLagrange<1,2>
+  set Coupling quadrature order             = 3
+  set Initial space refinement              = 2
+  set Boundary coarsening level             = 1 # 0 = matching multiplier mesh. k>0 = 2^k coarser non-matching multiplier mesh
+  set Bulk space finite element degree      = 1
+  set Use discontinuous multiplier space    = false
+  set Multiplier finite element degree      = 1
+  set Name of the grid                      = hyper_cube
+  set Arguments for the grid                = 0 : 1.: false
+  set Name of the external grid file        = null #homer.msh #horse.msh #lion.msh #lucy.msh # #happy_buddha.msh #stanford-bunny.msh #homer.msh #nefertiti.msh
+  set Scale factor for the external grid    = 1. #1e-3 #1e-2 #1e-3
+  set Number of refinement cycles           = 3
+  set Verbosity level                       = 4
+  set Mesh type                             = hex # | simplex
+  set Use manufactured solution             = false
+  set Iterative inversion mass matrix       = false
+  set Augmentation gamma assembly           = 10.0
+  set Augmentation gamma preconditioner     = 10.0
+  set Export matrices for matlab            = false
+  set Matrix export max DoFs                = 16642
+
+  subsection Dirichlet boundary data
+    # Symbolic constants for the function expression, in the form
+    # 'var1=value1, var2=value2, ...'. Note: 'pi', 'Pi', 'PI', and 'E' are
+    # predefined.
+    set Function constants  =
+
+    # Semicolon-separated formulas for the function components. Supports
+    # standard operations, functions `sin`, `cos`, etc., and conditionals
+    # `if(x>0, 1, -1)`.
+    set Function expression = x+y #10*(x + y) #x+y #sin(x)+y #0.
+
+    # Names of the independent variables, separated by commas.
+    set Variable names      = x,y,t
+  end
+
+  subsection Inner solver control
+    set Log frequency = 1
+    set Log history   = false
+    set Log result    = true
+    set Max steps     = 1000   # default: 100
+    set Reduction     = 1.e-10
+    set Tolerance     = 1.e-2 # default: 1.e-10
+  end
+
+  subsection Outer solver control
+    set Log frequency = 1
+    set Log history   = true
+    set Log result    = true
+    set Max steps     = 1000
+    set Reduction     = 1.e-9 # default: 1.e-2
+    set Tolerance     = 1.e-12 # default: 1.e-10
+  end
+
+  subsection Right hand side
+    # Symbolic constants for the function expression, in the form
+    # 'var1=value1, var2=value2, ...'. Note: 'pi', 'Pi', 'PI', and 'E' are
+    # predefined.
+    set Function constants  =
+
+    # Semicolon-separated formulas for the function components. Supports
+    # standard operations, functions `sin`, `cos`, etc., and conditionals
+    # `if(x>0, 1, -1)`.
+    set Function expression = 1.     # default: 0
+
+    # Names of the independent variables, separated by commas.
+    set Variable names      = x,y,t
+  end
+
+end

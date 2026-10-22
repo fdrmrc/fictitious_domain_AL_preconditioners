@@ -553,7 +553,7 @@ public:
   void run();
 
 private:
-  void generate_grids(unsigned int extra_refinement = 0);
+  void generate_grids();
   void refine_background_at_interface(unsigned int n_levels);
   void system_setup();
   void assemble_bg();
@@ -851,8 +851,7 @@ ElasticityInterfaceDLMParallel<dim>::ElasticityInterfaceDLMParallel(
 }
 
 template <int dim>
-void ElasticityInterfaceDLMParallel<dim>::generate_grids(
-    unsigned int extra_refinement) {
+void ElasticityInterfaceDLMParallel<dim>::generate_grids() {
   TimerOutput::Scope t(computing_timer, "Grid generation");
 
   // Incremental builder for fullydistributed triangulations: keeps a serial
@@ -2424,7 +2423,7 @@ template <int dim> void ElasticityInterfaceDLMParallel<dim>::run() {
     // Note: clearing/rebuilding of both triangulations is handled inside
     // `generate_grids` (which refines incrementally for hex p::d::T and for
     // cached-serial p::f::T simplex meshes).
-    generate_grids(cycle);
+    generate_grids();
     system_setup();
     solve();
     output_results(cycle);
