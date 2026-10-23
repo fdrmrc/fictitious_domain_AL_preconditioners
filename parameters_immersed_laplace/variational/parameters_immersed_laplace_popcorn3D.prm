@@ -1,0 +1,72 @@
+# The "Grid generation" subsection makes it easy to switch to:
+#   - any deal.II built-in grid generator (e.g. hyper_ball, hyper_sphere,
+#     channel_with_cylinder, ...),
+#   - simplex meshes (set the corresponding "* mesh type" to "simplex"),
+#   - external .msh files (set "* grid generator" to "from_file" and provide
+#     the file path under "External * grid file").
+subsection Distributed Lagrange<2,3>
+  set Coupling quadrature order                    = 3
+  set Dirichlet boundary ids                       = 0, 1, 2, 3, 4, 5
+  set Embedded space finite element degree         = 1
+  set Embedding space finite element degree        = 1
+  set Initial embedded space refinement            = 0
+  set Initial embedding space refinement           = 4
+  set Local refinements steps near embedded domain = 3
+  set Number of refinement cycles                  = 4
+  set Solver                                       = augmented
+  set Verbosity level                              = 10
+
+  subsection AL preconditioner
+    set Augmentation constant = 10.0
+    set Use diagonal inverse = false
+    set Use operator version = true
+  end
+
+  subsection Grid generation
+    # Background (embedding) grid: deal.II built-in or "from_file".
+    set Background grid generator                     = hyper_cube
+    set Background grid generator arguments           = -1.0: 1.0: true
+    # "hex" (quads/hexes) or "simplex" (tris/tets).
+    set Background mesh type                          = hex
+
+    # Embedded (immersed) grid: deal.II built-in or "from_file".
+    # "hyper_sphere" arguments: <center> : <radius>.
+    set Embedded grid generator                       = from_file
+    set Embedded grid generator arguments             = 0.4, 0.4, 0.4 : 0.2
+    set Embedded mesh type                            = simplex
+
+    # Used only when the corresponding "* grid generator" above is set
+    # to "from_file".
+    set External background grid file                 =
+    set External embedded grid file                   = popcorn_3D_surface.msh
+    set Scale factor for the external background grid = 1
+    set Scale factor for the external embedded grid   = 0.55
+  end
+
+  subsection Embedded value
+    set Function constants  =
+    set Function expression = 1
+    set Variable names      = x,y,t
+  end
+
+  subsection Embedding Dirichlet boundary conditions
+    set Function constants  =
+    set Function expression = 0
+    set Variable names      = x,y,t
+  end
+
+  subsection Embedding rhs function
+    set Function constants  =
+    set Function expression = 1
+    set Variable names      = x,y,t
+  end
+
+  subsection Schur solver control
+    set Log frequency = 1
+    set Log history   = true
+    set Log result    = true
+    set Max steps     = 1000
+    set Reduction     = 1.e-9
+    set Tolerance     = 1.e-12
+  end
+end
