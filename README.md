@@ -1,6 +1,6 @@
 # Augmented Lagrangian-based preconditioners for Fictitious Domain solvers
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23208420.svg)](https://zenodo.org/records/23208420)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23590171.svg)](https://zenodo.org/records/23590171)
 [![deal.II master](https://github.com/fdrmrc/fictitious_domain_AL_preconditioners/actions/workflows/dealii-master.yml/badge.svg?branch=main)](https://github.com/fdrmrc/fictitious_domain_AL_preconditioners/actions/workflows/dealii-master.yml)
 [![Tests](https://github.com/fdrmrc/fictitious_domain_AL_preconditioners/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/fdrmrc/fictitious_domain_AL_preconditioners/actions/workflows/tests.yml)
 
