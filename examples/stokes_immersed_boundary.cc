@@ -1,4 +1,5 @@
 #include <deal.II/base/data_out_base.h>
+#include <deal.II/base/enable_observer_pointer.h>
 #include <deal.II/base/exceptions.h>
 #include <deal.II/base/function.h>
 #include <deal.II/base/logstream.h>
@@ -82,7 +83,7 @@ template <> struct InnerPreconditioner<3> {
 };
 
 template <class MatrixType, class PreconditionerType>
-class InverseMatrix : public Subscriptor {
+class InverseMatrix : public EnableObserverPointer {
 public:
   InverseMatrix(const MatrixType &m, const PreconditionerType &preconditioner);
 
@@ -109,7 +110,8 @@ void InverseMatrix<MatrixType, PreconditionerType>::vmult(
   cg.solve(*matrix, dst, src, *preconditioner);
 }
 
-template <class PreconditionerType> class SchurComplement : public Subscriptor {
+template <class PreconditionerType>
+class SchurComplement : public EnableObserverPointer {
 public:
   SchurComplement(
       const BlockSparseMatrix<double> &system_matrix,
