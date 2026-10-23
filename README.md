@@ -43,9 +43,9 @@ The following table provides a list of target executables. The *Paper* column li
 | `stokes_immersed_boundary` | Stokes problem with a codimension-one constraints | [parameters_stokes.prm](parameters_stokes/parameters_stokes.prm), [parameters_stokes_3d.prm](parameters_stokes/parameters_stokes_3d.prm) | [1 - CMAME](#paper-scalable) |
 | `elliptic_interface` | Scalar elliptic interface problem with a jump in coefficients | [parameters_elliptic_interface/](parameters_elliptic_interface/) | [2 - CAMWA](#paper-elliptic_interface) |
 | `elliptic_interface_elasticity` | Immersed elasticity interface problem with different material properties on subdomains | [parameters_elasticity.prm](parameters_elasticity/parameters_elasticity.prm) | [2 - CAMWA](#paper-elliptic_interface) |
-| `babuska_problem` | Boundary constraints imposed using Lagrange multipliers a' la Babuska | [parameters_babuska_2D.prm](/parameters_babuska/parameters_babuska_2D.prm), [parameters_babuska_3D.prm](/parameters_babuska/parameters_babuska_3D.prm) | [3 - arXiV](#paper-unified) |
-| `variational_elliptic_interface` | Scalar elliptic interface problem with a jump in coefficients (with variational augmentation) | [parameters_elliptic_interface_variational.prm](/parameters_elliptic_interface/variational/parameters_elliptic_interface_variational.prm) | [3 - arXiV](#paper-unified) |
-| `variational_immersed_elasticity` | Immersed elasticity interface problem with different material properties on subdomains (with variational augmentation) | [parameters_elasticity_variational.prm](/parameters_elasticity/parameters_elasticity_variational.prm) | [3 - arXiV](#paper-unified) |
+| `babuska_problem` | Boundary constraints imposed using Lagrange multipliers a' la Babuska | [parameters_babuska_2D.prm](/parameters_babuska/parameters_babuska_2D.prm), [parameters_babuska_3D.prm](/parameters_babuska/parameters_babuska_3D.prm) | [3 - arXiv](#paper-unified) |
+| `variational_elliptic_interface` | Scalar elliptic interface problem with a jump in coefficients (with variational augmentation) | [parameters_elliptic_interface_variational.prm](/parameters_elliptic_interface/variational/parameters_elliptic_interface_variational.prm) | [3 - arXiv](#paper-unified) |
+| `variational_immersed_elasticity` | Immersed elasticity interface problem with different material properties on subdomains (with variational augmentation) | [parameters_elasticity_variational.prm](/parameters_elasticity/parameters_elasticity_variational.prm) | [3 - arXiv](#paper-unified) |
 
 
 Copy the appropriate parameter file and pass the copy to the executable. Most of the examples include the following sections:
@@ -118,16 +118,16 @@ keywords = {Preconditioning, Iterative solvers, Fictitious domain method, Non-ma
 ```
 <a id="paper-unified"></a>
 
-- **[3]** **🚀 NEW ✨** [*A unified variational framework for augmented Lagrangian preconditioning of saddle point systems: applications to mixed-dimensional and fictitious domain methods* (arXiV)](https://www.notyet.com)
+- **[3]** **🚀 NEW ✨** [*A unified variational framework for augmented Lagrangian preconditioning of saddle point systems: applications to mixed-dimensional and fictitious domain methods* (arXiv)](https://arxiv.org/pdf/2610.30357)
 ```bibtex
 @article{BenziUnified,
       title = {A unified variational framework for augmented Lagrangian preconditioning of saddle point systems: applications to mixed-dimensional and fictitious domain methods},
       author={Michele Benzi and Marco Feder and Luca Heltai and Federica Mugnaioni},
       year={2026},
-      eprint={-},
+      eprint={2610.30357},
       archivePrefix={arXiv},
       primaryClass={math.NA},
-      url={https://arxiv.org/abs/-}, 
+      url={https://arxiv.org/pdf/2610.30357}
 }
 ```
 
