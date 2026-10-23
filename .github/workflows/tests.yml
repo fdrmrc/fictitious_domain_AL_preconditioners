@@ -1,0 +1,71 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Nightly, after the dealii/dealii:master-* images have been rebuilt.
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ctest:
+    name: ctest (${{ matrix.build_type }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # No deal.II 9.8 image is published, so use the most recent one.
+    container:
+      image: dealii/dealii:master-noble
+      options: --user root
+
+    env:
+      OMPI_ALLOW_RUN_AS_ROOT: 1
+      OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+      # Docker restricts the ptrace-based single-copy shared-memory transport.
+      OMPI_MCA_btl_vader_single_copy_mechanism: none
+
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Show deal.II version
+        run: |
+          grep -h -E '#define DEAL_II_(PACKAGE_VERSION|GIT_BRANCH|GIT_REVISION) ' \
+            /usr/local/include/deal.II/base/config.h \
+            /usr/local/include/deal.II/base/revision.h
+
+      - name: Restore ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: tests-dealii-master-noble-${{ matrix.build_type }}
+          max-size: 500M
+          update-package-index: true
+          install: detect
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -GNinja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build build --parallel "$(nproc)"
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Show ccache statistics
+        if: always()
+        run: ccache --show-stats

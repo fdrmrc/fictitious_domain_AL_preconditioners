@@ -1,6 +1,8 @@
 # Augmented Lagrangian-based preconditioners for Fictitious Domain solvers
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23208420.svg)](https://zenodo.org/records/23208420)
+[![deal.II master](https://github.com/fdrmrc/fictitious_domain_AL_preconditioners/actions/workflows/dealii-master.yml/badge.svg?branch=main)](https://github.com/fdrmrc/fictitious_domain_AL_preconditioners/actions/workflows/dealii-master.yml)
+[![Tests](https://github.com/fdrmrc/fictitious_domain_AL_preconditioners/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/fdrmrc/fictitious_domain_AL_preconditioners/actions/workflows/tests.yml)
 
 This repository contains application codes with augmented Lagrangian preconditioners for several fictitious domain discretizations, based on the [deal.II library](https://www.dealii.org).
 
@@ -14,7 +16,9 @@ The examples require:
 - **openMPI** version  >= 4.0.3
 - **Trilinos** version >= 14.4.0
 - **deal.II** version **9.8 or newer**. The tested version is **9.8.0-pre**
-  (a development build of deal.II 9.8).
+  (a development build of deal.II 9.8). The examples are also built nightly
+  against the latest deal.II `master` by the
+  [deal.II master workflow](.github/workflows/dealii-master.yml).
 - **p4est**, **muparser**, and **UMFPACK**.
 
 deal.II must be configured with the flags `DEAL_II_WITH_TRILINOS`, `DEAL_II_WITH_P4EST`, `DEAL_II_WITH_MUPARSER`, and `DEAL_II_WITH_UMFPACK` enabled.
@@ -78,6 +82,8 @@ ctest --output-on-failure
 ```
 
 The tests, their parameter files, and the allowed iteration ranges are in [tests/](tests/).
+
+The [Tests workflow](.github/workflows/tests.yml) runs the suite in Debug and Release mode against the latest deal.II `master` on every push to `main`, on every pull request, and nightly.
 
 ## Citations
 
