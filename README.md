@@ -108,17 +108,18 @@ keywords = {Preconditioning, Iterative solvers, Fictitious domain method, Non-ma
 
 <a id="paper-elliptic_interface"></a>
 
-- **[2]** [*Augmented Lagrangian preconditioners for fictitious domain formulations of elliptic interface problems* (to appear in CAMWA)](https://arxiv.org/abs/2603.12993)
+- **[2]** [*Augmented Lagrangian preconditioners for fictitious domain formulations of elliptic interface problems* (CAMWA)](https://www.sciencedirect.com/science/article/pii/S0898122126005043)
 ```bibtex
-@article{benzi2026augmentedlagrangianpreconditionersfictitious,
-  title         = {Augmented {L}agrangian preconditioners for fictitious domain formulations of elliptic interface problems},
-  author        = {Michele Benzi and Marco Feder and Luca Heltai and Federica Mugnaioni},
-  year          = {2026},
-  eprint        = {2603.12993},
-  journal       = {arXiv:2603.12993},
-  archiveprefix = {arXiv},
-  primaryclass  = {math.NA},
-  opturl        = {https://arxiv.org/abs/2603.12993}
+
+@article{BENZI2026522,
+  title   = {Augmented {L}agrangian preconditioners for fictitious domain formulations of elliptic interface problems},
+  journal = {Computers \& Mathematics with Applications},
+  volume  = {224},
+  pages   = {522-551},
+  year    = {2026},
+  issn    = {0898-1221},
+  doi     = {https://doi.org/10.1016/j.camwa.2026.10.042},
+  author  = {Michele Benzi and Marco Feder and Luca Heltai and Federica Mugnaioni}
 }
 
 ```
